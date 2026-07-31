@@ -1,0 +1,23 @@
+{
+  "name": "AI 工作站",
+  "short_name": "AI工作台",
+  "description": "Personal AI Workspace — 简洁、私密、支持多端同步的个人工作管理平台",
+  "start_url": "/workspace",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "browser"],
+  "background_color": "#ffffff",
+  "theme_color": "#0f1115",
+  "orientation": "portrait-primary",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "categories": ["productivity", "utilities"],
+  "shortcuts": [
+    { "name": "新建待办", "short_name": "待办", "url": "/todos?action=new" },
+    { "name": "新建笔记", "short_name": "笔记", "url": "/notes?action=new" }
+  ]
+}
