@@ -5,7 +5,7 @@ const withPWA = nextPWA({
   disable: process.env.NODE_ENV === "development",
   register: true,
   skipWaiting: true,
-  cacheOnFrontEndNav: true,
+  cacheOnFrontEndNav: false,
   reloadOnOnline: true,
   navigateFallback: "/",
   navigateFallbackDenylist: [/^\/api\//, /^\/assistant(?:\/|$)/],

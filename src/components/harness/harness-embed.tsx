@@ -16,6 +16,7 @@ type EmbedState =
   | { status: "ready"; url: string }
   | { status: "error"; message: string };
 
+const FALLBACK_ERROR = "无法启动 AI 助手";
 const WRAPPER_CLASS =
   "fixed inset-y-0 left-0 right-0 h-svh bg-background md:left-[240px] lg:left-[256px]";
 
@@ -34,14 +35,14 @@ export function HarnessEmbed() {
           method: "POST",
           cache: "no-store",
         });
-        const data = (await response.json()) as BootstrapResponse;
+        const data = await readBootstrapResponse(response);
 
         if (!response.ok) {
-          throw new Error(data.error?.message ?? "无法启动 AI 助手");
+          throw new Error(data?.error?.message ?? FALLBACK_ERROR);
         }
 
-        if (!data.url) {
-          throw new Error("无法启动 AI 助手");
+        if (!data?.url) {
+          throw new Error(FALLBACK_ERROR);
         }
 
         if (!cancelled) {
@@ -51,7 +52,7 @@ export function HarnessEmbed() {
         if (!cancelled) {
           setState({
             status: "error",
-            message: error instanceof Error ? error.message : "无法启动 AI 助手",
+            message: error instanceof Error ? error.message : FALLBACK_ERROR,
           });
         }
       }
@@ -96,4 +97,20 @@ export function HarnessEmbed() {
       ) : null}
     </section>
   );
+}
+
+async function readBootstrapResponse(
+  response: Response,
+): Promise<BootstrapResponse | null> {
+  const contentType = response.headers.get("content-type")?.toLowerCase();
+
+  if (!contentType?.includes("application/json")) {
+    return null;
+  }
+
+  try {
+    return (await response.json()) as BootstrapResponse;
+  } catch {
+    return null;
+  }
 }
