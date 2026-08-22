@@ -24,5 +24,9 @@
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules", "src/tests/**/*.{test,spec}.{ts,tsx}"]
+  "exclude": [
+    "node_modules",
+    "services/harness-gateway",
+    "src/tests/**/*.{test,spec}.{ts,tsx}"
+  ]
 }
