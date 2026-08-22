@@ -1,2 +1,12 @@
 FROM caddy:2.10.2-alpine
-COPY Caddyfile /etc/caddy/Caddyfile
+
+RUN addgroup -S -g 10001 relay \
+  && adduser -S -D -H -u 10001 -G relay relay
+
+COPY --chown=relay:relay Caddyfile /etc/caddy/Caddyfile
+
+ENV HOME=/tmp/relay \
+    XDG_CONFIG_HOME=/tmp/relay/config \
+    XDG_DATA_HOME=/tmp/relay/data
+
+USER relay
