@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Bell, Search, Sun, Moon, Monitor } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { useThemeMode, type ThemeMode } from "@/lib/theme";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +11,7 @@ import { chineseWeekday, formatChineseDate, dateKey } from "@/lib/date";
 import { useMediaQuery } from "@/hooks/use-media-query";
 
 export function TopBar() {
+  const pathname = usePathname();
   const isMobile = useMediaQuery("(max-width: 767px)");
   const [now, setNow] = useState<Date>(new Date());
 
@@ -17,6 +19,8 @@ export function TopBar() {
     const id = setInterval(() => setNow(new Date()), 30_000);
     return () => clearInterval(id);
   }, []);
+
+  if (pathname?.startsWith("/assistant")) return null;
 
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-background/95 px-4 backdrop-blur sm:px-6">

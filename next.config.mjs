@@ -8,8 +8,17 @@ const withPWA = nextPWA({
   cacheOnFrontEndNav: true,
   reloadOnOnline: true,
   navigateFallback: "/",
-  navigateFallbackDenylist: [/^\/api\//],
+  navigateFallbackDenylist: [/^\/api\//, /^\/assistant(?:\/|$)/],
   runtimeCaching: [
+    {
+      urlPattern: ({ request, url }) =>
+        request.mode === "navigate" &&
+        url.origin === self.location.origin &&
+        (url.pathname === "/assistant" ||
+          url.pathname.startsWith("/assistant/")),
+      handler: "NetworkOnly",
+      options: { cacheName: "assistant-navigation" },
+    },
     {
       urlPattern: ({ request }) =>
         request.destination === "style" ||
