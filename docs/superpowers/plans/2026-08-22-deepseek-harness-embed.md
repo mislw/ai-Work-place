@@ -576,6 +576,14 @@ describe("Harness logout", () => {
       expect.objectContaining({ method: "POST", credentials: "include" }),
     );
   });
+
+  it("contains an invalid configured origin", async () => {
+    vi.stubEnv("NEXT_PUBLIC_HARNESS_ORIGIN", "not a url");
+    const { clearHarnessSession } = await import(
+      "@/lib/harness/clear-session"
+    );
+    await expect(clearHarnessSession()).resolves.toBeUndefined();
+  });
 });
 ```
 
@@ -591,13 +599,17 @@ Create `src/lib/harness/clear-session.ts`:
 
 ```ts
 export async function clearHarnessSession(): Promise<void> {
-  const origin = process.env.NEXT_PUBLIC_HARNESS_ORIGIN;
-  if (!origin) return;
-  await fetch(`${new URL(origin).origin}/auth/logout`, {
-    method: "POST",
-    credentials: "include",
-    mode: "cors",
-  }).catch(() => undefined);
+  try {
+    const origin = process.env.NEXT_PUBLIC_HARNESS_ORIGIN;
+    if (!origin) return;
+    await fetch(`${new URL(origin).origin}/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+      mode: "cors",
+    });
+  } catch {
+    // Harness logout is best-effort; Supabase logout remains authoritative.
+  }
 }
 ```
 
