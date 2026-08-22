@@ -35,6 +35,7 @@ const withPWA = nextPWA({
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  output: "standalone",
   experimental: {
     typedRoutes: false,
   },
