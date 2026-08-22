@@ -1,0 +1,37 @@
+const MIN_SECRET_BYTES = 32;
+
+export interface GatewayConfig {
+  harnessUpstream: string;
+  ownerUserId: string;
+  port: number;
+  secret: Uint8Array;
+}
+
+export function getGatewayConfig(
+  environment: NodeJS.ProcessEnv = process.env,
+): GatewayConfig {
+  const harnessUpstream = environment.HARNESS_UPSTREAM;
+  const ownerUserId = environment.HARNESS_OWNER_USER_ID;
+  const rawSecret = environment.HARNESS_EMBED_SECRET;
+  const port = Number(environment.PORT ?? "8787");
+
+  if (!harnessUpstream) throw new Error("HARNESS_UPSTREAM is required");
+  const upstreamUrl = new URL(harnessUpstream);
+  if (upstreamUrl.protocol !== "http:" && upstreamUrl.protocol !== "https:") {
+    throw new Error("HARNESS_UPSTREAM must be an HTTP(S) URL");
+  }
+  if (!ownerUserId) throw new Error("HARNESS_OWNER_USER_ID is required");
+  if (!rawSecret || new TextEncoder().encode(rawSecret).length < MIN_SECRET_BYTES) {
+    throw new Error("HARNESS_EMBED_SECRET must be at least 32 bytes");
+  }
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new Error("PORT must be an integer between 0 and 65535");
+  }
+
+  return {
+    harnessUpstream: upstreamUrl.toString(),
+    ownerUserId,
+    port,
+    secret: new TextEncoder().encode(rawSecret),
+  };
+}
