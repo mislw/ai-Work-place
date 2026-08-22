@@ -45,7 +45,7 @@ Harness 固定到当前验证版本 `0.1.0-rc.5`。它处于开发者预览阶�
 
 ## 页面集成
 
-AI 工作站增加 `/assistant` 页面和“AI 助手”导航项。该页面保留现有侧边栏和顶栏，剩余可用区域由 iframe 完整占用，不使用卡片容器，不在小尺寸工作台组件中嵌套完整 Harness。
+AI 工作站增加 `/assistant` 页面和“AI 助手”导航项。该页面保留现有侧边栏与移动端菜单入口，隐藏顶栏和底部导航，其余区域由 iframe 完整占用，不使用卡片容器，不在小尺寸工作台组件中嵌套完整 Harness。
 
 iframe 指向一次性 bootstrap URL。完成认证后 Gateway 立即重定向到 Harness 根页面并从地址中移除 token。iframe 允许 Harness 所需的剪贴板和下载能力，但通过响应头限制只能被 `https://ai.mislw.cn` 嵌入：
 
