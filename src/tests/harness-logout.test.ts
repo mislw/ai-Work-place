@@ -17,6 +17,10 @@ vi.mock("next/navigation", () => ({ useRouter }));
 describe("Harness logout", () => {
   beforeEach(() => {
     vi.resetModules();
+    createClient.mockReset();
+    supabaseSignOut.mockReset();
+    useAuth.mockReset();
+    useRouter.mockReset();
     supabaseSignOut.mockResolvedValue({ error: null });
     createClient.mockReturnValue({ auth: { signOut: supabaseSignOut } });
     useAuth.mockReturnValue({ user: null, loading: false, configured: true });
@@ -70,4 +74,43 @@ describe("Harness logout", () => {
     );
     expect(supabaseSignOut).toHaveBeenCalledTimes(1);
   });
+
+  it("waits for Harness clearing before Supabase logout", async () => {
+    vi.stubEnv("NEXT_PUBLIC_HARNESS_ORIGIN", "https://agent.mislw.cn");
+    let resolveHarnessLogout!: (response: Response) => void;
+    const harnessLogout = new Promise<Response>((resolve) => {
+      resolveHarnessLogout = resolve;
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValue(harnessLogout);
+
+    const { signOut } = await import("@/hooks/use-require-auth");
+
+    const signOutPromise = signOut();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://agent.mislw.cn/auth/logout",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
+    expect(supabaseSignOut).not.toHaveBeenCalled();
+
+    resolveHarnessLogout(new Response(null, { status: 204 }));
+    await expect(signOutPromise).resolves.toBeUndefined();
+    expect(supabaseSignOut).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["invalid", "not a url"],
+  ])(
+    "continues to Supabase logout when Harness origin is %s",
+    async (_label, origin) => {
+      vi.stubEnv("NEXT_PUBLIC_HARNESS_ORIGIN", origin);
+
+      const { signOut } = await import("@/hooks/use-require-auth");
+
+      await expect(signOut()).resolves.toBeUndefined();
+      expect(supabaseSignOut).toHaveBeenCalledTimes(1);
+    },
+  );
 });
