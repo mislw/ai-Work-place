@@ -35,7 +35,7 @@ describe("POST /api/harness/bootstrap", () => {
       ownerUserId: "owner-1",
       secret: new Uint8Array(32),
     });
-    signHarnessBootstrapToken.mockResolvedValue("signed-token");
+    signHarnessBootstrapToken.mockResolvedValue("a+b/c=d?");
   });
 
   it("returns a bootstrap URL for the authenticated owner", async () => {
@@ -46,7 +46,9 @@ describe("POST /api/harness/bootstrap", () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      url: "https://agent.mislw.cn/auth/bootstrap?token=signed-token",
+      url: `https://agent.mislw.cn/auth/bootstrap?token=${encodeURIComponent(
+        "a+b/c=d?",
+      )}`,
     });
   });
 
