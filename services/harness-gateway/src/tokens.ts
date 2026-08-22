@@ -64,19 +64,24 @@ export async function verifyBootstrapToken(
     audience: "harness-bootstrap",
     currentDate: now,
   });
+  const nowSeconds = Math.floor(now.getTime() / 1000);
 
   if (
+    payload.aud !== "harness-bootstrap" ||
     typeof payload.sub !== "string" ||
     payload.sub.length === 0 ||
     typeof payload.jti !== "string" ||
     payload.jti.length === 0 ||
+    typeof payload.iat !== "number" ||
     typeof payload.exp !== "number" ||
+    payload.exp - payload.iat !== 60 ||
+    payload.iat > nowSeconds ||
     payload.sub !== config.ownerUserId
   ) {
     throw new Error("Invalid bootstrap token claims");
   }
 
-  if (!nonces.consume(payload.jti, payload.exp, Math.floor(now.getTime() / 1000))) {
+  if (!nonces.consume(payload.jti, payload.exp, nowSeconds)) {
     throw new TokenReplayError();
   }
 
@@ -110,9 +115,11 @@ export async function verifySessionToken(
   });
 
   if (
+    payload.aud !== "harness-session" ||
     typeof payload.sub !== "string" ||
     payload.sub.length === 0 ||
-    typeof payload.exp !== "number"
+    typeof payload.exp !== "number" ||
+    payload.sub !== config.ownerUserId
   ) {
     throw new Error("Invalid session token claims");
   }

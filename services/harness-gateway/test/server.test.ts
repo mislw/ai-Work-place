@@ -19,6 +19,7 @@ let gatewayServer: Server;
 let gatewayOrigin: string;
 let config: GatewayConfig;
 let upstreamWebSocketConnections = 0;
+let lastUpstreamWebSocketHeaders: http.IncomingHttpHeaders | undefined;
 
 function listen(server: Server): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -116,15 +117,26 @@ function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
   });
 }
 
-async function openWebSocket(cookie: string): Promise<WebSocket> {
+async function openWebSocket(
+  cookie: string,
+  headers: http.OutgoingHttpHeaders = {},
+): Promise<{
+  responseHeaders: http.IncomingHttpHeaders;
+  websocket: WebSocket;
+}> {
   const websocket = new WebSocket(gatewayOrigin.replace("http", "ws"), {
-    headers: { Cookie: cookie },
+    headers: { Cookie: cookie, ...headers },
   });
   const message = once(websocket, "message");
+  const upgrade = once(websocket, "upgrade");
   await withTimeout(once(websocket, "open").then(() => undefined), 2_000);
   const [payload] = await withTimeout(message, 2_000);
+  const [response] = await withTimeout(upgrade, 2_000);
   assert.equal(payload.toString(), "upstream-ready");
-  return websocket;
+  return {
+    responseHeaders: (response as http.IncomingMessage).headers,
+    websocket,
+  };
 }
 
 async function closeWebSocket(websocket: WebSocket): Promise<void> {
@@ -138,22 +150,38 @@ before(async () => {
   upstreamServer = http.createServer((request, response) => {
     response.setHeader("Content-Type", "application/json");
     response.setHeader("Connection", "close");
+    response.setHeader("Set-Cookie", [
+      "upstream_session=secret; Path=/",
+      "dsh_embed=overwritten; Path=/",
+    ]);
+    response.setHeader("Set-Cookie2", "legacy_upstream=secret; Path=/");
     response.end(
       JSON.stringify({
+        authorization: request.headers.authorization,
+        cookie: request.headers.cookie,
+        cookie2: request.headers.cookie2,
         host: request.headers.host,
         method: request.method,
+        origin: request.headers.origin,
+        proxyAuthorization: request.headers["proxy-authorization"],
         url: request.url,
+        xHarnessClient: request.headers["x-harness-client"],
       }),
     );
   });
   upstreamWebSockets = new WebSocketServer({ noServer: true });
+  upstreamWebSockets.on("headers", (headers) => {
+    headers.push("Set-Cookie: upstream_ws=secret; Path=/");
+    headers.push("Set-Cookie2: legacy_upstream_ws=secret; Path=/");
+  });
   upstreamServer.on("upgrade", (request, socket, head) => {
     upstreamWebSockets.handleUpgrade(request, socket, head, (websocket) => {
       upstreamWebSockets.emit("connection", websocket, request);
     });
   });
-  upstreamWebSockets.on("connection", (websocket) => {
+  upstreamWebSockets.on("connection", (websocket, request) => {
     upstreamWebSocketConnections += 1;
+    lastUpstreamWebSocketHeaders = request.headers;
     websocket.send("upstream-ready");
   });
 
@@ -212,12 +240,17 @@ describe("HTTP gateway", () => {
     );
   });
 
-  it("protects HTTP and preserves the original Host upstream", async () => {
+  it("strips HTTP credentials while preserving required upstream headers", async () => {
     assert.equal((await requestGateway("/rpc")).statusCode, 401);
     const response = await requestGateway("/rpc?value=1", {
       headers: {
-        Cookie: await sessionCookie(),
+        Authorization: "Bearer browser-secret",
+        Cookie: `${await sessionCookie()}; domain_secret=browser-secret`,
+        Cookie2: "legacy_browser=secret",
         Host: "agent.mislw.cn",
+        Origin: "https://ai.mislw.cn",
+        "Proxy-Authorization": "Basic proxy-secret",
+        "X-Harness-Client": "embed",
       },
     });
 
@@ -225,8 +258,12 @@ describe("HTTP gateway", () => {
     assert.deepEqual(JSON.parse(response.body), {
       host: "agent.mislw.cn",
       method: "GET",
+      origin: "https://ai.mislw.cn",
       url: "/rpc?value=1",
+      xHarnessClient: "embed",
     });
+    assert.equal(response.headers["set-cookie"], undefined);
+    assert.equal(response.headers["set-cookie2"], undefined);
   });
 
   it("allows logout only from the configured app origin and clears the cookie", async () => {
@@ -316,7 +353,31 @@ describe("WebSocket gateway", () => {
   });
 
   it("proxies authenticated upgrades to the real WebSocket upstream", async () => {
-    const websocket = await openWebSocket(await sessionCookie());
+    const { responseHeaders, websocket } = await openWebSocket(
+      `${await sessionCookie()}; domain_secret=browser-secret`,
+      {
+        Authorization: "Bearer browser-secret",
+        Cookie2: "legacy_browser=secret",
+        Host: "agent.mislw.cn",
+        Origin: "https://ai.mislw.cn",
+        "Proxy-Authorization": "Basic proxy-secret",
+        "X-Harness-Client": "embed",
+      },
+    );
+
+    assert.equal(lastUpstreamWebSocketHeaders?.authorization, undefined);
+    assert.equal(lastUpstreamWebSocketHeaders?.cookie, undefined);
+    assert.equal(lastUpstreamWebSocketHeaders?.cookie2, undefined);
+    assert.equal(lastUpstreamWebSocketHeaders?.host, "agent.mislw.cn");
+    assert.equal(lastUpstreamWebSocketHeaders?.origin, "https://ai.mislw.cn");
+    assert.equal(
+      lastUpstreamWebSocketHeaders?.["proxy-authorization"],
+      undefined,
+    );
+    assert.equal(lastUpstreamWebSocketHeaders?.upgrade, "websocket");
+    assert.equal(lastUpstreamWebSocketHeaders?.["x-harness-client"], "embed");
+    assert.equal(responseHeaders["set-cookie"], undefined);
+    assert.equal(responseHeaders["set-cookie2"], undefined);
     await closeWebSocket(websocket);
   });
 
@@ -329,7 +390,7 @@ describe("WebSocket gateway", () => {
       .setIssuedAt(now)
       .setExpirationTime(now + 2)
       .sign(secret);
-    const websocket = await openWebSocket(`dsh_embed=${token}`);
+    const { websocket } = await openWebSocket(`dsh_embed=${token}`);
 
     await withTimeout(once(websocket, "close").then(() => undefined), 3_000);
     assert.equal(websocket.readyState, WebSocket.CLOSED);
@@ -337,8 +398,8 @@ describe("WebSocket gateway", () => {
 
   it("logout destroys every existing WebSocket for the authenticated sub", async () => {
     const cookie = await sessionCookie();
-    const first = await openWebSocket(cookie);
-    const second = await openWebSocket(cookie);
+    const { websocket: first } = await openWebSocket(cookie);
+    const { websocket: second } = await openWebSocket(cookie);
     const firstClosed = once(first, "close").then(() => undefined);
     const secondClosed = once(second, "close").then(() => undefined);
 

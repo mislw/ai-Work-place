@@ -1,5 +1,7 @@
 import http, {
+  type ClientRequest,
   type IncomingMessage,
+  type OutgoingHttpHeaders,
   type Server,
   type ServerResponse,
 } from "node:http";
@@ -21,11 +23,32 @@ import {
 
 const APP_ORIGIN = "https://ai.mislw.cn";
 const FRAME_POLICY = `frame-ancestors ${APP_ORIGIN}`;
+const CREDENTIAL_REQUEST_HEADERS = [
+  "authorization",
+  "cookie",
+  "cookie2",
+  "proxy-authorization",
+] as const;
+const CREDENTIAL_RESPONSE_HEADERS = new Set(["set-cookie", "set-cookie2"]);
 
 function sendText(response: ServerResponse, statusCode: number, body: string) {
   response.statusCode = statusCode;
   response.setHeader("Content-Type", "text/plain; charset=utf-8");
   response.end(body);
+}
+
+function stripCredentialRequestHeaders(proxyRequest: ClientRequest) {
+  for (const header of CREDENTIAL_REQUEST_HEADERS) {
+    proxyRequest.removeHeader(header);
+  }
+}
+
+function stripCredentialResponseHeaders(headers: OutgoingHttpHeaders) {
+  for (const header of Object.keys(headers)) {
+    if (CREDENTIAL_RESPONSE_HEADERS.has(header.toLowerCase())) {
+      delete headers[header];
+    }
+  }
 }
 
 export function createGatewayServer(
@@ -79,7 +102,22 @@ export function createGatewayServer(
     sockets.clear();
   }
 
+  proxy.on("proxyReq", (proxyRequest) => {
+    stripCredentialRequestHeaders(proxyRequest);
+  });
+
+  proxy.on("proxyReqWs", (proxyRequest) => {
+    stripCredentialRequestHeaders(proxyRequest);
+    proxyRequest.on("response", (proxyResponse) => {
+      stripCredentialResponseHeaders(proxyResponse.headers);
+    });
+    proxyRequest.on("upgrade", (proxyResponse) => {
+      stripCredentialResponseHeaders(proxyResponse.headers);
+    });
+  });
+
   proxy.on("proxyRes", (proxyResponse) => {
+    stripCredentialResponseHeaders(proxyResponse.headers);
     proxyResponse.headers["content-security-policy"] = FRAME_POLICY;
     proxyResponse.headers["referrer-policy"] = "no-referrer";
   });

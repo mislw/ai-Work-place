@@ -23,23 +23,27 @@ const config: GatewayConfig = {
 
 async function signBootstrapToken({
   audience = "harness-bootstrap",
-  expiresAt = 1_800,
+  expiresAt = 1_760,
+  includeIssuedAt = true,
+  issuedAt = 1_700,
   jti = "nonce-1",
   subject = "owner-1",
 }: {
-  audience?: string;
+  audience?: string | string[];
   expiresAt?: number;
+  includeIssuedAt?: boolean;
+  issuedAt?: number;
   jti?: string;
   subject?: string;
 } = {}) {
-  return new SignJWT({})
+  let token = new SignJWT({})
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setAudience(audience)
     .setSubject(subject)
     .setJti(jti)
-    .setIssuedAt(1_700)
-    .setExpirationTime(expiresAt)
-    .sign(secret);
+    .setExpirationTime(expiresAt);
+  if (includeIssuedAt) token = token.setIssuedAt(issuedAt);
+  return token.sign(secret);
 }
 
 describe("bootstrap token verification", () => {
@@ -89,6 +93,51 @@ describe("bootstrap token verification", () => {
       ),
     );
   });
+
+  it("requires an exact single bootstrap audience", async () => {
+    await assert.rejects(
+      verifyBootstrapToken(
+        await signBootstrapToken({
+          audience: ["harness-bootstrap", "extra-audience"],
+        }),
+        config,
+        new NonceStore(),
+        new Date(1_750_000),
+      ),
+    );
+  });
+
+  it("requires iat and an exact 60-second bootstrap lifetime", async () => {
+    const now = new Date(1_750_000);
+
+    await assert.rejects(
+      verifyBootstrapToken(
+        await signBootstrapToken({ includeIssuedAt: false }),
+        config,
+        new NonceStore(),
+        now,
+      ),
+    );
+    await assert.rejects(
+      verifyBootstrapToken(
+        await signBootstrapToken({ expiresAt: 1_761 }),
+        config,
+        new NonceStore(),
+        now,
+      ),
+    );
+  });
+
+  it("rejects a bootstrap token issued in the future", async () => {
+    await assert.rejects(
+      verifyBootstrapToken(
+        await signBootstrapToken({ expiresAt: 1_860, issuedAt: 1_800 }),
+        config,
+        new NonceStore(),
+        new Date(1_750_000),
+      ),
+    );
+  });
 });
 
 describe("session tokens", () => {
@@ -108,6 +157,33 @@ describe("session tokens", () => {
         token,
         config,
         new Date("2026-08-22T00:10:00.000Z"),
+      ),
+    );
+  });
+
+  it("requires an exact single session audience and owner subject", async () => {
+    const issuedAt = 1_700;
+    const signSession = (audience: string | string[], subject = "owner-1") =>
+      new SignJWT({})
+        .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+        .setAudience(audience)
+        .setSubject(subject)
+        .setIssuedAt(issuedAt)
+        .setExpirationTime(issuedAt + 600)
+        .sign(secret);
+
+    await assert.rejects(
+      verifySessionToken(
+        await signSession(["harness-session", "extra-audience"]),
+        config,
+        new Date(1_750_000),
+      ),
+    );
+    await assert.rejects(
+      verifySessionToken(
+        await signSession("harness-session", "other-user"),
+        config,
+        new Date(1_750_000),
       ),
     );
   });
