@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth, type AuthState } from "@/hooks/use-auth";
+import { clearHarnessSession } from "@/lib/harness/clear-session";
 
 /**
  * 客户端守卫：未登录直接跳到 /login。
@@ -42,6 +43,7 @@ export function useRedirectIfAuthenticated(to = "/workspace"): AuthState {
 
 /** 客户端登出。 */
 export async function signOut(): Promise<void> {
+  await clearHarnessSession();
   const supabase = createClient();
   await supabase.auth.signOut();
 }
