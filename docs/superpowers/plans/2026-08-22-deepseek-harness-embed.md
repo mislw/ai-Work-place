@@ -27,14 +27,18 @@
 ### Task 1: Secure the App Authentication Boundary
 
 **Files:**
+- Create: `src/lib/auth/preview.ts`
+- Modify: `middleware.ts`
+- Modify: `src/hooks/use-auth.ts`
 - Modify: `src/lib/supabase/guards.ts`
 - Create: `src/tests/require-user-auth.test.ts`
+- Create: `src/tests/auth-preview-boundary.test.tsx`
 - Modify: `.env.example`
 
 **Interfaces:**
 - Produces: `isPreviewAuthEnabled(): boolean`
 - Produces: `requireUser(): Promise<{ user: User; supabase: SupabaseClient | null }>`
-- Constraint: preview bypass is allowed only when `NODE_ENV !== "production"` and `ENABLE_AUTH_PREVIEW === "true"`.
+- Constraint: every server, middleware and client preview bypass is allowed only when `NODE_ENV !== "production"` and `NEXT_PUBLIC_ENABLE_AUTH_PREVIEW === "true"`.
 
 - [ ] **Step 1: Write the failing production-bypass test**
 
@@ -50,41 +54,58 @@ describe("requireUser preview boundary", () => {
 
   it("refuses preview auth in production even when the flag is true", async () => {
     vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("ENABLE_AUTH_PREVIEW", "true");
-    const { isPreviewAuthEnabled } = await import("@/lib/supabase/guards");
+    vi.stubEnv("NEXT_PUBLIC_ENABLE_AUTH_PREVIEW", "true");
+    const { isPreviewAuthEnabled } = await import("@/lib/auth/preview");
     expect(isPreviewAuthEnabled()).toBe(false);
   });
 
   it("allows the explicit preview user only outside production", async () => {
     vi.stubEnv("NODE_ENV", "development");
-    vi.stubEnv("ENABLE_AUTH_PREVIEW", "true");
-    const { isPreviewAuthEnabled } = await import("@/lib/supabase/guards");
+    vi.stubEnv("NEXT_PUBLIC_ENABLE_AUTH_PREVIEW", "true");
+    const { isPreviewAuthEnabled } = await import("@/lib/auth/preview");
     expect(isPreviewAuthEnabled()).toBe(true);
   });
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify failure**
+- [ ] **Step 2: Write failing middleware and client-hook tests**
 
-Run: `npm test -- --run src/tests/require-user-auth.test.ts`
+`auth-preview-boundary.test.tsx` must:
 
-Expected: FAIL because `isPreviewAuthEnabled` is not exported and preview auth is hard-coded on.
+- set `NODE_ENV=production` and `NEXT_PUBLIC_ENABLE_AUTH_PREVIEW=true`;
+- assert an unauthenticated `/workspace` request is redirected to `/login`, proving middleware does not bypass;
+- render `useAuth()` with Supabase browser config mocked unavailable and assert `user=null`, `configured=false`, proving the client does not return the preview user;
+- set `NODE_ENV=development` and assert `useAuth()` returns the preview user without calling `createClient()`.
 
-- [ ] **Step 3: Replace the hard-coded preview switch**
+- [ ] **Step 3: Run the focused tests and verify failure**
+
+Run: `npm test -- --run src/tests/require-user-auth.test.ts src/tests/auth-preview-boundary.test.tsx`
+
+Expected: FAIL because the shared helper does not exist and middleware/client preview auth is hard-coded on.
+
+- [ ] **Step 4: Replace all hard-coded preview switches**
+
+`src/lib/auth/preview.ts`:
 
 ```ts
 export function isPreviewAuthEnabled(): boolean {
   return (
     process.env.NODE_ENV !== "production" &&
-    process.env.ENABLE_AUTH_PREVIEW === "true"
+    process.env.NEXT_PUBLIC_ENABLE_AUTH_PREVIEW === "true"
   );
 }
+```
 
-export async function requireUser() {
-  if (isPreviewAuthEnabled()) {
-    return { user: PREVIEW_USER, supabase: null };
-  }
-  // Keep the existing cookie-aware Supabase path unchanged.
+`middleware.ts` and `src/lib/supabase/guards.ts` import this helper and replace their hard-coded constants. Registration remains disabled before the preview branch.
+
+`src/hooks/use-auth.ts` must call all React hooks unconditionally. Compute `previewEnabled` first, let the effect return early when it is true, and return the fixed preview state only after `useState`/`useEffect` have been called:
+
+```ts
+const previewEnabled = isPreviewAuthEnabled();
+const browserConfigured = isSupabaseBrowserConfigured();
+// Declare state and effect here; the effect does nothing when previewEnabled.
+if (previewEnabled) {
+  return { user: PREVIEW_USER, loading: false, error: null, configured: true };
 }
 ```
 
@@ -92,23 +113,24 @@ Add to `.env.example`:
 
 ```dotenv
 # Local visual preview only. It is ignored in production.
-ENABLE_AUTH_PREVIEW=false
+NEXT_PUBLIC_ENABLE_AUTH_PREVIEW=false
 ```
 
-- [ ] **Step 4: Run auth tests**
+- [ ] **Step 5: Run auth tests and typecheck**
 
-Run: `npm test -- --run src/tests/require-user-auth.test.ts src/tests/auth-login-route.test.ts`
+Run:
+
+```bash
+npm test -- --run src/tests/require-user-auth.test.ts src/tests/auth-preview-boundary.test.tsx src/tests/auth-login-route.test.ts src/tests/registration-disabled.test.ts
+npm run typecheck
+```
 
 Expected: PASS.
 
-- [ ] **Step 5: Record the change without capturing unrelated dirty hunks**
+- [ ] **Step 6: Record the change without capturing unrelated dirty hunks**
 
-If `src/lib/supabase/guards.ts` or `.env.example` already contains unrelated user changes, leave the task uncommitted and record the owned hunk in the execution notes. Otherwise:
+`middleware.ts`, `src/hooks/use-auth.ts`, `src/lib/supabase/guards.ts` and `.env.example` already contain user changes. Leave the task uncommitted and record the exact owned hunks in the execution ledger; do not stage whole files.
 
-```bash
-git add src/lib/supabase/guards.ts src/tests/require-user-auth.test.ts .env.example
-git commit -m "fix: keep preview auth out of production"
-```
 
 ### Task 2: Define and Test the Bootstrap JWT Contract
 
@@ -483,7 +505,7 @@ export default function AssistantPage() {
 - Display the server error message and a `RefreshCw` icon button labeled `重试`.
 - Render an unframed iframe with `className="h-full w-full border-0"`.
 - Set `allow="clipboard-read; clipboard-write"` and `referrerPolicy="no-referrer"`.
-- Use a stable wrapper height `h-svh`; `/assistant` hides both `TopBar` and `BottomNav`, so no fixed chrome height is subtracted.
+- Use `fixed inset-y-0 left-0 right-0 h-svh bg-background md:left-[240px] lg:left-[256px]` for the wrapper. This escapes the shared mobile `main` bottom padding while matching the existing desktop sidebar widths; `/assistant` hides both `TopBar` and `BottomNav`.
 
 - [ ] **Step 4: Add the navigation entry and assistant-specific chrome**
 
