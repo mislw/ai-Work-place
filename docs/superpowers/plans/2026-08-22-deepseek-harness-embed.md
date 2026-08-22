@@ -547,9 +547,8 @@ git commit -m "feat: embed the harness assistant page"
 ### Task 5: Clear the Harness Session During Logout
 
 **Files:**
+- Create: `src/lib/harness/clear-session.ts`
 - Modify: `src/hooks/use-require-auth.ts`
-- Modify: `src/components/layout/nav.tsx`
-- Modify: `src/app/(app)/settings/page.tsx`
 - Create: `src/tests/harness-logout.test.ts`
 
 **Interfaces:**
@@ -612,7 +611,7 @@ export async function signOut(): Promise<void> {
 }
 ```
 
-Keep existing callers using the shared `signOut()`; remove any duplicate direct Supabase sign-out found in Settings.
+Keep the existing Navigation and Settings callers unchanged because both already use the shared `signOut()`.
 
 - [ ] **Step 4: Run logout and login tests**
 
@@ -623,8 +622,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit only owned hunks**
 
 ```bash
-git add src/lib/harness/clear-session.ts src/tests/harness-logout.test.ts
-git diff -- src/hooks/use-require-auth.ts src/components/layout/nav.tsx src/app/\(app\)/settings/page.tsx
+git add src/lib/harness/clear-session.ts src/hooks/use-require-auth.ts src/tests/harness-logout.test.ts
 git commit -m "feat: clear harness auth during logout"
 ```
 
