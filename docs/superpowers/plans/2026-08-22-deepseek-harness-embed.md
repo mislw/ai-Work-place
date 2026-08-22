@@ -261,14 +261,21 @@ git commit -m "feat: add harness bootstrap token contract"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-const { getUser, createRouteHandlerClient, signHarnessBootstrapToken } =
+const {
+  getUser,
+  createRouteHandlerClient,
+  getHarnessConfig,
+  signHarnessBootstrapToken,
+} =
   vi.hoisted(() => ({
     getUser: vi.fn(),
     createRouteHandlerClient: vi.fn(),
+    getHarnessConfig: vi.fn(),
     signHarnessBootstrapToken: vi.fn(),
   }));
 
 vi.mock("@/lib/supabase/server", () => ({ createRouteHandlerClient }));
+vi.mock("@/lib/harness/config", () => ({ getHarnessConfig }));
 vi.mock("@/lib/harness/bootstrap-token", () => ({
   signHarnessBootstrapToken,
 }));
@@ -277,9 +284,17 @@ import { POST } from "@/app/api/harness/bootstrap/route";
 
 describe("POST /api/harness/bootstrap", () => {
   beforeEach(() => {
-    vi.stubEnv("NEXT_PUBLIC_HARNESS_ORIGIN", "https://agent.mislw.cn");
+    getUser.mockReset();
+    createRouteHandlerClient.mockReset();
+    getHarnessConfig.mockReset();
+    signHarnessBootstrapToken.mockReset();
     createRouteHandlerClient.mockResolvedValue({ auth: { getUser } });
     getUser.mockResolvedValue({ data: { user: { id: "owner-1" } } });
+    getHarnessConfig.mockReturnValue({
+      publicOrigin: "https://agent.mislw.cn",
+      ownerUserId: "owner-1",
+      secret: new Uint8Array(32),
+    });
     signHarnessBootstrapToken.mockResolvedValue("signed-token");
   });
 
@@ -299,6 +314,24 @@ describe("POST /api/harness/bootstrap", () => {
       new NextRequest("http://localhost/api/harness/bootstrap", { method: "POST" }),
     );
     expect(response.status).toBe(401);
+  });
+
+  it("returns 403 for an authenticated non-owner", async () => {
+    getUser.mockResolvedValue({ data: { user: { id: "other-user" } } });
+    const response = await POST(
+      new NextRequest("http://localhost/api/harness/bootstrap", { method: "POST" }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("returns 503 when Harness configuration is unavailable", async () => {
+    getHarnessConfig.mockImplementation(() => {
+      throw new Error("not configured");
+    });
+    const response = await POST(
+      new NextRequest("http://localhost/api/harness/bootstrap", { method: "POST" }),
+    );
+    expect(response.status).toBe(503);
   });
 });
 ```
