@@ -92,6 +92,7 @@ describe("Harness logout", () => {
       "https://agent.mislw.cn/auth/logout",
       expect.objectContaining({ method: "POST", credentials: "include" }),
     );
+    await Promise.resolve();
     expect(supabaseSignOut).not.toHaveBeenCalled();
 
     resolveHarnessLogout(new Response(null, { status: 204 }));
