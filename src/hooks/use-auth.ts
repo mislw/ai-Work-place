@@ -5,6 +5,7 @@ import {
   createClient,
   isSupabaseBrowserConfigured,
 } from "@/lib/supabase/client";
+import { isPreviewAuthEnabled } from "@/lib/auth/preview";
 import type { User } from "@supabase/supabase-js";
 
 export interface AuthState {
@@ -14,15 +15,32 @@ export interface AuthState {
   configured: boolean;
 }
 
+const PREVIEW_USER = {
+  id: "00000000-0000-4000-8000-000000000000",
+  email: "preview@example.local",
+} as User;
+
 export function useAuth(): AuthState {
-  const configured = isSupabaseBrowserConfigured();
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState<boolean>(configured);
+  const previewEnabled = isPreviewAuthEnabled();
+  const configured = previewEnabled || isSupabaseBrowserConfigured();
+  const [user, setUser] = useState<User | null>(
+    previewEnabled ? PREVIEW_USER : null,
+  );
+  const [loading, setLoading] = useState<boolean>(
+    previewEnabled ? false : configured,
+  );
   const [error, setError] = useState<string | null>(
-    configured ? null : "Supabase 尚未配置",
+    previewEnabled || configured ? null : "Supabase 尚未配置",
   );
 
   useEffect(() => {
+    if (previewEnabled) {
+      setUser(PREVIEW_USER);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
     if (!configured) {
       setUser(null);
       setLoading(false);
@@ -56,6 +74,7 @@ export function useAuth(): AuthState {
       unsubscribe = () => sub.subscription.unsubscribe();
     } catch (e) {
       if (!active) return;
+      setUser(null);
       setError(e instanceof Error ? e.message : "Supabase 初始化失败");
       setLoading(false);
     }
@@ -64,7 +83,7 @@ export function useAuth(): AuthState {
       active = false;
       unsubscribe?.();
     };
-  }, [configured]);
+  }, [configured, previewEnabled]);
 
   return { user, loading, error, configured };
 }

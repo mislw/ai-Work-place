@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { createClient } from "@/lib/supabase/client";
+import {
+  createClient,
+  isSupabaseBrowserConfigured,
+} from "@/lib/supabase/client";
+import { isPreviewAuthEnabled } from "@/lib/auth/preview";
 import type {
   RealtimeChannel,
   RealtimePostgresChangesPayload,
@@ -30,9 +34,11 @@ export function useCollectionRealtime({
 }: UseCollectionRealtimeOptions): void {
   const handlerRef = useRef(onChange);
   handlerRef.current = onChange;
+  const canSubscribe =
+    enabled && !isPreviewAuthEnabled() && isSupabaseBrowserConfigured();
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!canSubscribe) return;
     const supabase = createClient();
     const channel: RealtimeChannel = supabase
       .channel(`${table}-changes`)
@@ -51,5 +57,5 @@ export function useCollectionRealtime({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [table, filter, enabled]);
+  }, [table, filter, canSubscribe]);
 }

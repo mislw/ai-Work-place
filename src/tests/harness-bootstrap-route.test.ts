@@ -3,18 +3,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const {
-  getUser,
-  createRouteHandlerClient,
+  AssistantAuthError,
+  getAssistantOwner,
   getHarnessConfig,
   signHarnessBootstrapToken,
 } = vi.hoisted(() => ({
-  getUser: vi.fn(),
-  createRouteHandlerClient: vi.fn(),
+  AssistantAuthError: class AssistantAuthError extends Error {},
+  getAssistantOwner: vi.fn(),
   getHarnessConfig: vi.fn(),
   signHarnessBootstrapToken: vi.fn(),
 }));
 
-vi.mock("@/lib/supabase/server", () => ({ createRouteHandlerClient }));
+vi.mock("@/lib/assistant/auth", () => ({
+  AssistantAuthError,
+  getAssistantOwner,
+}));
 vi.mock("@/lib/harness/config", () => ({ getHarnessConfig }));
 vi.mock("@/lib/harness/bootstrap-token", () => ({
   signHarnessBootstrapToken,
@@ -24,12 +27,10 @@ import { POST } from "@/app/api/harness/bootstrap/route";
 
 describe("POST /api/harness/bootstrap", () => {
   beforeEach(() => {
-    getUser.mockReset();
-    createRouteHandlerClient.mockReset();
+    getAssistantOwner.mockReset();
     getHarnessConfig.mockReset();
     signHarnessBootstrapToken.mockReset();
-    createRouteHandlerClient.mockResolvedValue({ auth: { getUser } });
-    getUser.mockResolvedValue({ data: { user: { id: "owner-1" } } });
+    getAssistantOwner.mockResolvedValue({ id: "owner-1" });
     getHarnessConfig.mockReturnValue({
       publicOrigin: "https://agent.mislw.cn",
       ownerUserId: "owner-1",
@@ -53,7 +54,12 @@ describe("POST /api/harness/bootstrap", () => {
   });
 
   it("returns 401 without a Supabase user", async () => {
-    getUser.mockResolvedValue({ data: { user: null } });
+    getAssistantOwner.mockRejectedValue(
+      Object.assign(new Error("未登录"), {
+        status: 401,
+        code: "UNAUTHENTICATED",
+      }),
+    );
     const response = await POST(
       new NextRequest("http://localhost/api/harness/bootstrap", {
         method: "POST",
@@ -63,7 +69,12 @@ describe("POST /api/harness/bootstrap", () => {
   });
 
   it("returns 403 for an authenticated non-owner", async () => {
-    getUser.mockResolvedValue({ data: { user: { id: "other-user" } } });
+    getAssistantOwner.mockRejectedValue(
+      Object.assign(new Error("无权访问 AI 助手"), {
+        status: 403,
+        code: "FORBIDDEN",
+      }),
+    );
     const response = await POST(
       new NextRequest("http://localhost/api/harness/bootstrap", {
         method: "POST",

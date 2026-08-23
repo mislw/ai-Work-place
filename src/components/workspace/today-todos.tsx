@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Plus, MoreHorizontal, CalendarDays } from "lucide-react";
+import { Plus, MoreHorizontal, Star } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,8 @@ import { TodoFormDialog } from "@/components/todos/todo-form-dialog";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import Link from "next/link";
 import type { Todo } from "@/types/domain";
+import { useClientNow } from "@/hooks/use-client-now";
+import { CrayonDecoration } from "@/components/common/crayon-decoration";
 
 const PRIORITY_DOT: Record<Todo["priority"], string> = {
   low: "bg-priority-low",
@@ -42,8 +44,9 @@ export function TodayTodosCard() {
   const removeTodo = useDataStore((s) => s.removeTodo);
   const [formOpen, setFormOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Todo | null>(null);
+  const now = useClientNow();
 
-  const today = useMemo(() => dateKey(new Date()), []);
+  const today = useMemo(() => (now ? dateKey(now) : ""), [now]);
   const todayTodos = useMemo(
     () =>
       todos
@@ -122,12 +125,15 @@ export function TodayTodosCard() {
   }
 
   return (
-    <Card className="h-full">
-      <CardHeader className="flex flex-row items-center justify-between">
+    <Card className="workspace-feature-card workspace-todos-card relative h-full min-h-[388px] overflow-hidden">
+      <CardHeader className="workspace-card-header flex flex-row items-center justify-between">
         <div>
-          <CardTitle>今日待办</CardTitle>
+          <div className="workspace-title-ribbon workspace-title-red">
+            <CardTitle className="text-lg text-white">今日待办</CardTitle>
+            <Star className="h-4 w-4 fill-[#f5d447] text-[#f5d447]" aria-hidden />
+          </div>
           {todayTodos.length > 0 ? (
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-2 text-xs font-medium text-muted-foreground">
               {completed}/{todayTodos.length} · 已完成 {progress}%
             </p>
           ) : null}
@@ -144,11 +150,11 @@ export function TodayTodosCard() {
           </Button>
         </div>
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="relative min-h-[286px] space-y-2">
         {todayTodos.length > 0 ? (
           <>
             <Progress value={progress} />
-            <ul className="divide-y divide-border">
+            <ul className="divide-y divide-border xl:pr-28">
               {todayTodos.map((t) => (
                 <li
                   key={t.id}
@@ -197,12 +203,22 @@ export function TodayTodosCard() {
                 </li>
               ))}
             </ul>
+            <CrayonDecoration
+              scene="friends"
+              className="absolute bottom-3 right-4 hidden w-[112px] opacity-95 xl:block"
+            />
           </>
         ) : (
           <EmptyState
-            icon={<CalendarDays className="h-6 w-6" />}
+            icon={
+              <CrayonDecoration
+                scene="friends"
+                className="h-auto w-[156px]"
+              />
+            }
             title="今天还没有待办"
             description="添加第一项待办，开始管理你的今天。"
+            className="!border-0 !bg-transparent !py-5 !shadow-none"
             action={
               <Button size="sm" onClick={() => setFormOpen(true)}>
                 <Plus className="h-4 w-4" />

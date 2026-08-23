@@ -1,28 +1,32 @@
 "use client";
 
 import { useMemo } from "react";
-import { CheckSquare, FileText, CalendarDays, Clock } from "lucide-react";
+import { AlarmClock, CalendarDays, ClipboardCheck } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { useDataStore } from "@/lib/stores/data";
 import { dateKey, hhmmToMinutes } from "@/lib/date";
 import Link from "next/link";
+import { useClientNow } from "@/hooks/use-client-now";
+import { CrayonDecoration } from "@/components/common/crayon-decoration";
+
+const TONE_CLASS = {
+  yellow: "workspace-stat-yellow",
+  green: "workspace-stat-green",
+  blue: "workspace-stat-blue",
+} as const;
 
 export function OverviewCards() {
   const todos = useDataStore((s) => s.todos);
-  const notes = useDataStore((s) => s.notes);
   const events = useDataStore((s) => s.events);
+  const now = useClientNow();
 
-  const today = useMemo(() => dateKey(new Date()), []);
+  const today = useMemo(() => (now ? dateKey(now) : ""), [now]);
 
   const todayTodos = useMemo(
     () => todos.filter((t) => t.due_date === today),
     [todos, today],
   );
   const completed = todayTodos.filter((t) => t.status === "completed").length;
-  const todayNotes = useMemo(
-    () => notes.filter((n) => n.created_at.slice(0, 10) === today),
-    [notes, today],
-  );
   const todayEvents = useMemo(
     () => events.filter((e) => e.event_date === today),
     [events, today],
@@ -37,10 +41,14 @@ export function OverviewCards() {
   }, [todayEvents]);
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <section
+      aria-label="工作台概览"
+      className="grid grid-cols-1 gap-3 lg:grid-cols-3"
+    >
       <OverviewCard
+        tone="yellow"
         href="/todos"
-        icon={<CheckSquare className="h-4 w-4" />}
+        icon={<ClipboardCheck className="h-9 w-9" />}
         label="今日待办"
         value={`${completed}/${todayTodos.length || 0}`}
         sub={
@@ -50,27 +58,23 @@ export function OverviewCards() {
         }
       />
       <OverviewCard
-        href="/notes"
-        icon={<FileText className="h-4 w-4" />}
-        label="快速笔记"
-        value={`${todayNotes.length} 条`}
-        sub="今日记录"
-      />
-      <OverviewCard
+        tone="green"
         href="/calendar"
-        icon={<CalendarDays className="h-4 w-4" />}
+        icon={<CalendarDays className="h-9 w-9" />}
         label="日程安排"
         value={`${todayEvents.length} 个`}
         sub="今日事件"
+        character="standing"
       />
       <OverviewCard
+        tone="blue"
         href="/calendar"
-        icon={<Clock className="h-4 w-4" />}
+        icon={<AlarmClock className="h-9 w-9" />}
         label="专注时间"
         value={`${(focusMinutes / 60).toFixed(1)} h`}
         sub="今日累计"
       />
-    </div>
+    </section>
   );
 }
 
@@ -80,25 +84,41 @@ function OverviewCard({
   value,
   sub,
   href,
+  tone,
+  character,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   sub: string;
   href: string;
+  tone: "yellow" | "green" | "blue";
+  character?: "standing";
 }) {
   return (
     <Link
       href={href}
-      className="group block focus-visible:outline-none"
+      className="group block min-w-0 focus-visible:outline-none"
     >
-      <Card className="h-full p-4 transition-colors group-hover:bg-muted/50">
-        <div className="flex items-start justify-between">
-          <span className="text-sm text-muted-foreground">{label}</span>
-          <span className="text-muted-foreground">{icon}</span>
+      <Card className={`workspace-stat-card ${TONE_CLASS[tone]} relative h-[142px] overflow-hidden p-4 transition-transform group-hover:-translate-y-0.5`}>
+        <div className="relative z-10 flex h-full items-center gap-4">
+          <span className="workspace-stat-icon shrink-0" aria-hidden>
+            {icon}
+          </span>
+          <div className="min-w-0">
+            <span className="text-sm font-semibold text-foreground/80">{label}</span>
+            <div className="mt-1 text-[32px] font-black leading-none text-foreground">
+              {value}
+            </div>
+            <div className="mt-2 text-xs font-medium text-muted-foreground">{sub}</div>
+          </div>
         </div>
-        <div className="mt-3 text-2xl font-semibold tracking-tight">{value}</div>
-        <div className="mt-1 text-xs text-muted-foreground">{sub}</div>
+        {character ? (
+          <CrayonDecoration
+            scene={character}
+            className="absolute bottom-0 right-3 block h-[124px] w-auto opacity-95 lg:hidden xl:block"
+          />
+        ) : null}
       </Card>
     </Link>
   );

@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Bell, Search, Sun, Moon, Monitor } from "lucide-react";
+import { Bell, Cloud, Search, Sun, Moon, Monitor } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useThemeMode, type ThemeMode } from "@/lib/theme";
 import { Button } from "@/components/ui/button";
@@ -9,35 +8,44 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { chineseWeekday, formatChineseDate, dateKey } from "@/lib/date";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { useClientNow } from "@/hooks/use-client-now";
+import { CrayonDecoration } from "@/components/common/crayon-decoration";
 
 export function TopBar() {
   const pathname = usePathname();
   const isMobile = useMediaQuery("(max-width: 767px)");
-  const [now, setNow] = useState<Date>(new Date());
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 30_000);
-    return () => clearInterval(id);
-  }, []);
+  const now = useClientNow(30_000);
 
   if (pathname?.startsWith("/assistant")) return null;
 
   return (
-    <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-background/95 px-4 backdrop-blur sm:px-6">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+    <header className="crayon-paper sticky top-0 z-20 flex h-[78px] items-center gap-3 border-b border-border pl-14 pr-4 sm:px-6">
+      <div className="flex items-center gap-3 text-sm font-semibold text-foreground/80">
+        <span className="hidden h-10 w-10 rotate-[-8deg] items-center justify-center rounded-full text-[#e94235] sm:flex" aria-hidden>
+          <Sun className="h-8 w-8" strokeWidth={2.4} />
+        </span>
         <CalendarIcon />
         <span className="hidden sm:inline">
-          {formatChineseDate(now)} · {chineseWeekday(now)}
+          {now ? (
+            <>
+              {formatChineseDate(now)} · {chineseWeekday(now)}
+            </>
+          ) : (
+            <span aria-hidden className="inline-block h-5 w-44" />
+          )}
         </span>
-        <span className="sm:hidden">{dateKey(now)}</span>
+        <span className="sm:hidden">
+          {now ? dateKey(now) : <span aria-hidden className="inline-block w-20" />}
+        </span>
       </div>
+      <Cloud className="ml-6 hidden h-9 w-9 text-[#3c8dce]/65 md:block" strokeWidth={1.8} aria-hidden />
       <div className="ml-auto flex items-center gap-2">
         {!isMobile ? (
-          <div className="relative">
+          <div className="relative hidden lg:block">
             <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder="搜索 / 命令"
-              className="h-9 w-56 pl-8"
+              className="h-9 w-64 pl-8 pr-12"
               aria-label="搜索"
             />
             <kbd className="pointer-events-none absolute right-2 top-2 inline-flex h-5 select-none items-center rounded border border-border bg-muted px-1 font-mono text-[10px] text-muted-foreground">
@@ -49,6 +57,12 @@ export function TopBar() {
         <Button variant="ghost" size="icon" aria-label="通知">
           <Bell className="h-4 w-4" />
         </Button>
+        <span className="relative hidden h-12 w-12 overflow-hidden xl:block" aria-hidden>
+          <CrayonDecoration
+            scene="head"
+            className="absolute left-0 top-1 h-[58px] w-auto"
+          />
+        </span>
       </div>
     </header>
   );
@@ -106,6 +120,7 @@ export function PageHeader({
 }) {
   return (
     <div
+      data-ui="page-header"
       className={cn(
         "flex flex-col gap-3 border-b border-border bg-background px-4 py-5 sm:flex-row sm:items-end sm:justify-between sm:px-6",
       )}

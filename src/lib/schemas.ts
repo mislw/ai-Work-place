@@ -11,7 +11,11 @@ export const passwordSchema = z
   .max(72, "密码不能超过 72 位");
 
 export const loginSchema = z.object({
-  email: emailSchema,
+  username: z
+    .string()
+    .trim()
+    .min(1, "请输入用户名")
+    .max(40, "用户名不能超过 40 位"),
   password: z.string().min(1, "请输入密码"),
 });
 export type LoginInput = z.infer<typeof loginSchema>;

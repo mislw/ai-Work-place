@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import {
@@ -10,27 +10,25 @@ import {
   ClipboardList,
   Eye,
   EyeOff,
-  Grid2X2,
   Lock,
-  Mail,
   ShieldCheck,
+  UserRound,
 } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useRedirectIfAuthenticated } from "@/hooks/use-require-auth";
 import { loginSchema } from "@/lib/schemas";
 import { cn } from "@/lib/utils";
+import { safeNextPath } from "@/lib/auth/redirect";
 
 export function LoginForm() {
   const auth = useRedirectIfAuthenticated();
-  const router = useRouter();
   const search = useSearchParams();
-  const nextPath = search.get("next") ?? "/workspace";
+  const nextPath = safeNextPath(search.get("next"));
   const missingConfig = search.get("missing_config");
 
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -39,22 +37,27 @@ export function LoginForm() {
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
-    const parsed = loginSchema.safeParse({ email, password });
+    const parsed = loginSchema.safeParse({ username, password });
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? "请检查输入");
       return;
     }
     setLoading(true);
     try {
-      const supabase = createClient();
-      const { error: err } = await supabase.auth.signInWithPassword(parsed.data);
-      if (err) {
-        setError(translateAuthError(err.message));
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(parsed.data),
+      });
+      const result = (await response.json().catch(() => null)) as
+        | { error?: string }
+        | null;
+      if (!response.ok) {
+        setError(translateAuthError(result?.error ?? "登录失败"));
         return;
       }
       toast.success("登录成功");
-      router.replace(nextPath);
-      router.refresh();
+      window.location.assign(nextPath);
     } catch (e) {
       const message = e instanceof Error ? e.message : "登录失败";
       setError(
@@ -128,18 +131,18 @@ export function LoginForm() {
 
               <form onSubmit={onSubmit} className="space-y-5">
                 <div className="space-y-2">
-                  <Label htmlFor="email" className="text-sm font-medium text-[#171b18] dark:text-[#f2f4f1]">
-                    邮箱
+                  <Label htmlFor="username" className="text-sm font-medium text-[#171b18] dark:text-[#f2f4f1]">
+                    用户名
                   </Label>
                   <div className="relative">
-                    <Mail className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9aa09b]" />
+                    <UserRound className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9aa09b]" />
                     <Input
-                      id="email"
-                      type="email"
-                      autoComplete="email"
-                      placeholder="请输入邮箱地址"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
+                      id="username"
+                      type="text"
+                      autoComplete="username"
+                      placeholder="请输入用户名"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
                       required
                       className="h-12 rounded-lg border-[#e1e3df] bg-white/70 pl-11 text-[15px] shadow-none transition-colors placeholder:text-[#b4b9b4] focus-visible:border-[#2f7447] focus-visible:ring-[#2f7447]/15 dark:border-white/[0.1] dark:bg-white/[0.04] dark:placeholder:text-[#737a73]"
                     />
@@ -196,17 +199,6 @@ export function LoginForm() {
                 </Button>
               </form>
 
-              <div className="my-8 h-px bg-gradient-to-r from-transparent via-black/10 to-transparent dark:via-white/10" />
-
-              <p className="text-center text-sm text-[#858b86] dark:text-[#aeb5ae]">
-                还没有账号？
-                <Link
-                  href="/register"
-                  className="ml-1 font-semibold text-[#2f7447] underline-offset-4 hover:underline dark:text-[#8ec59a]"
-                >
-                  立即注册
-                </Link>
-              </p>
             </div>
 
             <div className="mt-8 lg:hidden">
@@ -298,7 +290,7 @@ function FooterLinks() {
 }
 
 function translateAuthError(msg: string): string {
-  if (/Invalid login credentials/i.test(msg)) return "邮箱或密码错误";
+  if (/Invalid login credentials/i.test(msg)) return "用户名或密码错误";
   if (/Email not confirmed/i.test(msg)) return "邮箱尚未验证";
   if (/rate limit/i.test(msg)) return "尝试次数过多，请稍后再试";
   return msg;

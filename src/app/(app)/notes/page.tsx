@@ -12,13 +12,11 @@ import { EmptyState } from "@/components/common/empty-state";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { useDataStore } from "@/lib/stores/data";
-import { useBootstrapData } from "@/hooks/use-bootstrap-data";
 import { useAuth } from "@/hooks/use-auth";
 import { createNote, deleteNote, togglePin } from "@/lib/data/notes";
 import { NewNoteDialog } from "@/components/notes/new-note-dialog";
 
 export default function NotesPage() {
-  useBootstrapData();
   const { user } = useAuth();
   const notes = useDataStore((s) => s.notes);
   const upsertNote = useDataStore((s) => s.upsertNote);
@@ -87,7 +85,7 @@ export default function NotesPage() {
   }
 
   return (
-    <>
+    <div data-crayon-page="notes" className="crayon-page">
       <PageHeader
         title="笔记"
         description="记录想法、想法、想法。手机电脑自动同步。"
@@ -99,7 +97,7 @@ export default function NotesPage() {
           </Button>
         }
       />
-      <div className="mx-auto w-full max-w-3xl space-y-4 px-4 py-4 sm:px-6">
+      <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-4 sm:px-6">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
@@ -206,6 +204,6 @@ export default function NotesPage() {
         destructive
         onConfirm={confirmDelete}
       />
-    </>
+    </div>
   );
 }

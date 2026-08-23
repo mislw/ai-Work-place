@@ -1,6 +1,7 @@
 "use client";
 
 import { createBrowserClient } from "@supabase/ssr";
+import { getSupabaseAuthCookieName } from "@/lib/supabase/config";
 
 /** 浏览器端是否已配置 Supabase。 */
 export function isSupabaseBrowserConfigured(): boolean {
@@ -22,5 +23,7 @@ export function createClient() {
       "Supabase 客户端未配置：请在 .env 中设置 NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY",
     );
   }
-  return createBrowserClient(url, anon);
+  return createBrowserClient(url, anon, {
+    cookieOptions: { name: getSupabaseAuthCookieName() },
+  });
 }

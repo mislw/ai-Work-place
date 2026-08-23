@@ -20,7 +20,6 @@ import { EmptyState } from "@/components/common/empty-state";
 import { ErrorState } from "@/components/common/error-state";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useDataStore } from "@/lib/stores/data";
-import { useBootstrapData } from "@/hooks/use-bootstrap-data";
 import { useAuth } from "@/hooks/use-auth";
 import { TodoFormDialog } from "@/components/todos/todo-form-dialog";
 import {
@@ -55,7 +54,6 @@ type FilterPriority = "all" | TodoPriority;
 type FilterRange = "all" | "today" | "week" | "overdue";
 
 export default function TodosPage() {
-  useBootstrapData();
   const { user } = useAuth();
   const todos = useDataStore((s) => s.todos);
   const upsertTodo = useDataStore((s) => s.upsertTodo);
@@ -199,7 +197,7 @@ export default function TodosPage() {
   }
 
   return (
-    <>
+    <div data-crayon-page="todos" className="crayon-page">
       <PageHeader
         title="今日待办"
         description="管理所有任务、安排、提醒。手机电脑自动同步。"
@@ -214,7 +212,7 @@ export default function TodosPage() {
           </Button>
         }
       />
-      <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-4 sm:px-6">
+      <div className="mx-auto w-full max-w-5xl space-y-4 px-4 py-4 sm:px-6">
         <Card>
           <CardContent className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center">
             <div className="relative flex-1">
@@ -390,7 +388,7 @@ export default function TodosPage() {
         destructive
         onConfirm={confirmDelete}
       />
-    </>
+    </div>
   );
 }
 

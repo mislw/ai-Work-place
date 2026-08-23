@@ -4,61 +4,101 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   CalendarDays,
+  Bot,
   CheckSquare,
   FileText,
-  LayoutDashboard,
+  House,
   LogOut,
   Settings as SettingsIcon,
   Sparkles,
   Menu,
   X,
+  Loader2,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { signOut } from "@/hooks/use-require-auth";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { CrayonDecoration } from "@/components/common/crayon-decoration";
 
 const NAV = [
-  { href: "/workspace", label: "工作台", icon: LayoutDashboard },
-  { href: "/calendar", label: "日历", icon: CalendarDays },
-  { href: "/todos", label: "今日待办", icon: CheckSquare },
-  { href: "/notes", label: "笔记", icon: FileText },
-  { href: "/documents", label: "文档", icon: Sparkles },
-  { href: "/settings", label: "设置", icon: SettingsIcon },
+  { href: "/workspace", label: "工作台", icon: House, iconClass: "text-[#e94235]" },
+  { href: "/assistant", label: "AI 助手", icon: Bot, iconClass: "text-[#3c8dce]" },
+  { href: "/calendar", label: "日历", icon: CalendarDays, iconClass: "text-[#e94235]" },
+  { href: "/todos", label: "今日待办", icon: CheckSquare, iconClass: "text-[#c39809]" },
+  { href: "/notes", label: "笔记", icon: FileText, iconClass: "text-[#64a85c]" },
+  { href: "/documents", label: "文档", icon: Sparkles, iconClass: "text-[#3c8dce]" },
+  { href: "/settings", label: "设置", icon: SettingsIcon, iconClass: "text-foreground/70" },
 ] as const;
+const BOTTOM_NAV_HREFS = new Set(["/workspace", "/calendar", "/todos", "/notes"]);
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { pendingHref, markPending } = usePendingNavigation(pathname);
   return (
-    <aside className="hidden md:flex md:w-[240px] lg:w-[256px] shrink-0 flex-col border-r border-border bg-card">
-      <div className="flex h-16 items-center gap-2 border-b border-border px-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-primary text-primary-foreground text-xs font-bold">
-          AI
+    <aside className="crayon-sidebar sticky top-0 hidden h-svh shrink-0 self-start flex-col overflow-hidden border-r border-border bg-[#fff9e9]/92 md:flex md:w-[240px] lg:w-[256px] dark:bg-card">
+      <div className="relative flex h-[78px] items-center gap-3 border-b border-border px-5">
+        <div className="crayon-brand-mark flex h-11 w-12 rotate-[-2deg] items-center justify-center rounded-md bg-white/70 text-xl font-black dark:bg-card">
+          <span className="text-[#e94235]">A</span>
+          <span className="text-[#3c8dce]">I</span>
         </div>
-        <span className="text-sm font-semibold tracking-tight">AI 工作站</span>
+        <div className="min-w-0">
+          <span className="crayon-display block text-lg leading-none text-[#29251e] dark:text-foreground">
+            AI 工作站
+          </span>
+          <span className="mt-1.5 block text-[10px] font-semibold text-muted-foreground">今天也要元气满满</span>
+        </div>
+        <CrayonDecoration
+          scene="head"
+          className="absolute -right-1 bottom-0 h-[56px] w-auto"
+        />
       </div>
-      <nav className="flex-1 space-y-0.5 p-3">
+      <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
         {NAV.map((item) => {
           const active = pathname?.startsWith(item.href);
+          const pending = pendingHref === item.href;
           return (
             <Link
               key={item.href}
               href={item.href}
+              prefetch={item.href !== "/settings"}
+              aria-busy={pending}
+              onClick={() => markPending(item.href)}
               className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
+                "flex items-center gap-3 rounded-md border border-transparent px-3 py-2 text-sm font-medium transition-colors",
                 active
-                  ? "bg-primary text-primary-foreground"
-                  : "text-foreground/80 hover:bg-muted hover:text-foreground",
+                  ? "border-[#d93636]/70 bg-[#e94743] text-white"
+                  : "text-foreground/80 hover:bg-[#fff1bd]/70 hover:text-foreground dark:hover:bg-muted",
               )}
             >
-              <item.icon className="h-4 w-4" />
+              {pending ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : (
+                <item.icon
+                  className={cn(
+                    "h-4 w-4",
+                    active ? "text-white" : item.iconClass,
+                  )}
+                />
+              )}
               {item.label}
+              {active ? (
+                <span className="ml-auto text-[#f5d447]" aria-hidden>
+                  ★
+                </span>
+              ) : null}
             </Link>
           );
         })}
       </nav>
+      <div className="crayon-sidebar-cameo relative flex h-[246px] min-h-[104px] shrink items-end justify-center overflow-hidden px-2">
+        <CrayonDecoration
+          scene="sidebar"
+          className="absolute bottom-0 h-auto w-[190px] max-w-none translate-y-1"
+        />
+      </div>
       <LogoutButton />
     </aside>
   );
@@ -67,10 +107,10 @@ export function Sidebar() {
 function LogoutButton() {
   const router = useRouter();
   return (
-    <div className="border-t border-border p-3">
+    <div className="border-t border-border bg-[#fff9e9]/92 p-3 dark:bg-card">
       <Button
         variant="ghost"
-        className="w-full justify-start gap-3"
+        className="w-full justify-start gap-3 shadow-none"
         onClick={async () => {
           await signOut();
           toast.success("已退出登录");
@@ -87,6 +127,7 @@ function LogoutButton() {
 export function MobileNav() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const { pendingHref, markPending } = usePendingNavigation(pathname);
   const isMobile = useMediaQuery("(max-width: 767px)");
   if (!isMobile) return null;
 
@@ -105,11 +146,11 @@ export function MobileNav() {
           onClick={() => setOpen(false)}
         >
           <div
-            className="absolute left-0 top-0 h-full w-72 max-w-[80%] bg-card p-4 shadow-xl"
+            className="crayon-paper absolute left-0 top-0 h-full w-72 max-w-[80%] border-r-2 border-border p-4 shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between pb-4">
-              <span className="text-sm font-semibold">AI 工作站</span>
+              <span className="crayon-display text-lg text-[#e94743]">AI 工作站</span>
               <button
                 aria-label="关闭菜单"
                 onClick={() => setOpen(false)}
@@ -121,19 +162,29 @@ export function MobileNav() {
             <nav className="space-y-1">
               {NAV.map((item) => {
                 const active = pathname?.startsWith(item.href);
+                const pending = pendingHref === item.href;
                 return (
                   <Link
                     key={item.href}
                     href={item.href}
-                    onClick={() => setOpen(false)}
+                    prefetch={item.href !== "/settings"}
+                    aria-busy={pending}
+                    onClick={() => {
+                      markPending(item.href);
+                      setOpen(false);
+                    }}
                     className={cn(
-                      "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
+                      "flex items-center gap-3 rounded-md border-2 border-transparent px-3 py-2 text-sm font-semibold transition-colors",
                       active
-                        ? "bg-primary text-primary-foreground"
+                        ? "border-[#d93636] bg-[#e94743] text-white"
                         : "text-foreground/80 hover:bg-muted",
                     )}
                   >
-                    <item.icon className="h-4 w-4" />
+                    {pending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+                    ) : (
+                      <item.icon className="h-4 w-4" />
+                    )}
                     {item.label}
                   </Link>
                 );
@@ -160,30 +211,55 @@ export function MobileNav() {
 /** 手机底部固定 5 项导航（不含文档，避免过密）。 */
 export function BottomNav() {
   const pathname = usePathname();
+  const { pendingHref, markPending } = usePendingNavigation(pathname);
   const isMobile = useMediaQuery("(max-width: 767px)");
+  if (pathname?.startsWith("/assistant")) return null;
   if (!isMobile) return null;
-  const items = NAV.slice(0, 4);
+  const items = NAV.filter((item) => BOTTOM_NAV_HREFS.has(item.href));
   return (
     <nav
-      className="md:hidden fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-border bg-card safe-bottom"
+      className="crayon-paper fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t-2 border-border md:hidden safe-bottom"
       aria-label="底部导航"
     >
       {items.map((item) => {
         const active = pathname?.startsWith(item.href);
+        const pending = pendingHref === item.href;
         return (
           <Link
             key={item.href}
             href={item.href}
+            prefetch={item.href !== "/settings"}
+            aria-busy={pending}
+            onClick={() => markPending(item.href)}
             className={cn(
-              "flex flex-col items-center justify-center gap-1 py-2 text-xs",
-              active ? "text-foreground" : "text-muted-foreground",
+              "relative flex flex-col items-center justify-center gap-1 py-2 text-xs font-semibold",
+              active ? "text-[#e94743]" : "text-muted-foreground",
             )}
           >
-            <item.icon className="h-4 w-4" />
+            {pending ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+            ) : (
+              <item.icon className="h-4 w-4" />
+            )}
             {item.label}
           </Link>
         );
       })}
     </nav>
   );
+}
+
+function usePendingNavigation(pathname: string | null) {
+  const [pendingHref, setPendingHref] = useState<string | null>(null);
+
+  useEffect(() => {
+    setPendingHref(null);
+  }, [pathname]);
+
+  return {
+    pendingHref,
+    markPending: (href: string) => {
+      setPendingHref(pathname === href ? null : href);
+    },
+  };
 }

@@ -68,7 +68,7 @@ npm run dev
 
 ### 5. 创建第一个账号
 
-访问 `/register` 注册。注册成功后会自动跳转 `/workspace`。
+公开注册已关闭，仅允许现有账号登录。
 如果开启了邮箱验证，请先在邮箱中点击确认链接。
 
 ---
@@ -135,7 +135,41 @@ AI_MODEL=gpt-4o-mini
 
 ---
 
-## 四、腾讯文档适配层说明
+## 四、个人知识收件箱
+
+助手页支持上传 PDF、DOCX、Markdown/TXT 和 PNG/JPEG/WebP。文件先写入私有隔离区，注册到 PostgreSQL 队列后由独立 Worker 完成：
+
+```text
+上传 -> MIME 校验/SHA-256 -> 文本提取或 OCR -> 结构分块
+     -> PostgreSQL 全文索引 -> AI 摘要和归档/笔记/待办/日程建议
+     -> 用户逐项确认 -> 工作台数据 + 来源关系
+```
+
+必须配置：
+
+```dotenv
+KNOWLEDGE_STORAGE_ROOT=/data/knowledge
+KNOWLEDGE_MAX_FILE_BYTES=52428800
+KNOWLEDGE_OCR_LANGUAGES=chi_sim+eng
+KNOWLEDGE_WORKER_POLL_MS=1500
+SUPABASE_SERVICE_ROLE_KEY=server-only
+```
+
+开发环境启动 Worker：
+
+```bash
+npm run knowledge:worker
+```
+
+- `KNOWLEDGE_STORAGE_ROOT` 必须是 Web App 和 Worker 都能访问的持久化私有目录。
+- `SUPABASE_SERVICE_ROLE_KEY` 仅限 Route Handler / Worker，严禁使用 `NEXT_PUBLIC_` 前缀。
+- Worker 未启动时上传会停留在队列；AI 未配置时仍会完成提取、分块和全文检索，并标记为需要人工确认。
+- Phase 1 只提供 PostgreSQL 全文检索。Obsidian Vault 连接、pgvector、Embedding、混合召回和重排尚未实现。
+- `supabase/init.sql` 的知识库表和 RPC 必须单独应用后，真实上传链路才能使用；本地构建成功不代表数据库迁移已执行。
+
+---
+
+## 五、腾讯文档适配层说明
 
 ### 第一版实现
 
@@ -168,7 +202,7 @@ TENCENT_DOCS_CLIENT_SECRET=...
 
 ---
 
-## 五、Vercel 部署
+## 六、Vercel 部署
 
 1. 推送到 GitHub 仓库
 2. 在 Vercel 中点击 **Import Project**
@@ -182,7 +216,7 @@ TENCENT_DOCS_CLIENT_SECRET=...
 
 ---
 
-## 六、PWA 安装
+## 七、PWA 安装
 
 ### iOS Safari
 1. 用 Safari 打开部署后的网址
@@ -198,7 +232,7 @@ TENCENT_DOCS_CLIENT_SECRET=...
 
 ---
 
-## 七、数据库表结构
+## 八、数据库表结构
 
 | 表 | 说明 | 关键字段 |
 |---|---|---|
@@ -209,6 +243,11 @@ TENCENT_DOCS_CLIENT_SECRET=...
 | `notes` | 笔记 | title, content, summary, tags[], is_pinned, **version** |
 | `document_links` | 腾讯文档链接 | title, document_url, note, last_opened_at |
 | `ai_action_logs` | AI 操作日志 | action_type, model, success, prompt_tokens, completion_tokens, duration_ms |
+| `file_assets` | 私有源文件元数据 | storage_key, mime_type, size_bytes, sha256, status |
+| `knowledge_documents` | 知识条目与分析摘要 | asset_id, collection_id, status, stage, summary |
+| `document_versions` / `document_chunks` | 版本、正文与全文检索分块 | content_hash, parser, content, page_start, heading_path |
+| `knowledge_proposals` / `knowledge_relations` | 待确认建议与来源关系 | kind, payload, status, source_id, target_id |
+| `ingestion_jobs` | Worker 队列、租约和进度 | status, stage, progress, attempt_count, lease_expires_at |
 
 - 所有业务表启用 RLS：`auth.uid() = user_id`
 - `updated_at` 由 `set_updated_at()` 触发器自动维护
@@ -217,7 +256,7 @@ TENCENT_DOCS_CLIENT_SECRET=...
 
 ---
 
-## 八、测试方法
+## 九、测试方法
 
 ```bash
 npm run typecheck    # TypeScript 严格检查
@@ -234,10 +273,11 @@ npm run build        # 生产构建（含 RSC 类型检查）
 - `ai.test.ts`：AI 配置探测
 - `logger.test.ts`：脱敏日志
 - `data-store.test.ts`：Realtime upsert/remove 路径无重复
+- `knowledge-*.test.ts(x)`：私有上传、MIME 校验、PDF/DOCX/OCR、分块、Worker、分析、检索、确认和助手上传交互
 
 ### 手工验证（对照验收 15 条）
 
-1. 访问 `/register` 注册账号 → 登录后跳到 `/workspace`
+1. 使用现有账号登录 → 登录后跳到 `/workspace`
 2. 直接访问 `/workspace` 未登录会跳到 `/login`
 3. 创建一条待办 → 打开第二个浏览器登录同一账号 → 应在 1 秒内出现
 4. 在手机尺寸打开 → 侧边栏隐藏、底部 4 项导航出现
@@ -248,7 +288,7 @@ npm run build        # 生产构建（含 RSC 类型检查）
 
 ---
 
-## 九、第一版已完成 vs 暂未完成
+## 十、第一版已完成 vs 暂未完成
 
 ### ✅ 已完成
 
@@ -269,6 +309,7 @@ npm run build        # 生产构建（含 RSC 类型检查）
 - RLS 全表启用 + Zod 校验 + 脱敏日志
 - Supabase 触发器自动维护 `updated_at` / 笔记 version
 - TypeScript 严格模式 + ESLint + Vitest
+- 助手知识收件箱：多文件上传、双并发队列、PDF/DOCX/图片提取、OCR、全文索引、归档与工作台建议确认
 
 ### ⏳ 暂未完成 / 后续路线图
 
@@ -280,10 +321,12 @@ npm run build        # 生产构建（含 RSC 类型检查）
 - 拖拽排序待办
 - 邮件 / 推送通知
 - 移动端原生 App 打包（Capacitor / Tauri）
+- Obsidian Vault 双向连接与冲突安全插件
+- pgvector Embedding、混合检索、重排与引用评测
 
 ---
 
-## 十、目录结构
+## 十一、目录结构
 
 ```
 personal-ai-workspace/

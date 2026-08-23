@@ -1,34 +1,42 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { createClient as createRawClient } from "@supabase/supabase-js";
+import { type NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import {
+  getServerSupabaseUrl,
+  getSupabaseAuthCookieName,
+} from "@/lib/supabase/config";
 
 /**
  * 服务端 Supabase 客户端（绑定到当前请求的 cookies）。
  * 用于 Server Components / Route Handlers 中的受身份校验操作。
  */
-export function createClient() {
-  const cookieStore = cookies();
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+export async function createClient() {
+  const cookieStore = await cookies();
+  const url = getServerSupabaseUrl();
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !anon) {
     throw new Error("Supabase 服务端未配置：缺少 NEXT_PUBLIC_SUPABASE_URL / ANON_KEY");
   }
   return createServerClient(url, anon, {
+    cookieOptions: { name: getSupabaseAuthCookieName() },
     cookies: {
-      get(name: string) {
-        return cookieStore.get(name)?.value;
+      getAll() {
+        return cookieStore.getAll();
       },
-      set(name: string, value: string, options: CookieOptions) {
+      setAll(
+        cookiesToSet: Array<{
+          name: string;
+          value: string;
+          options: CookieOptions;
+        }>,
+      ) {
         try {
-          cookieStore.set({ name, value, ...options });
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set(name, value, options);
+          });
         } catch {
           // 在 Server Component 中不可写，忽略；Route Handler 中允许。
-        }
-      },
-      remove(name: string, options: CookieOptions) {
-        try {
-          cookieStore.set({ name, value: "", ...options });
-        } catch {
-          // 同上
         }
       },
     },
@@ -36,8 +44,50 @@ export function createClient() {
 }
 
 /** 仅在 Route Handler 中使用：可在响应里写 cookie。 */
-export function createRouteHandlerClient() {
+export async function createRouteHandlerClient() {
   return createClient();
+}
+
+export function createAuthRouteClient(request: NextRequest) {
+  const url = getServerSupabaseUrl();
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anon) {
+    throw new Error("Supabase 服务端未配置：缺少 NEXT_PUBLIC_SUPABASE_URL / ANON_KEY");
+  }
+
+  let pendingCookies: Array<{
+    name: string;
+    value: string;
+    options: CookieOptions;
+  }> = [];
+
+  const supabase = createServerClient(url, anon, {
+    cookieOptions: { name: getSupabaseAuthCookieName() },
+    cookies: {
+      getAll() {
+        return request.cookies.getAll();
+      },
+      setAll(
+        cookiesToSet: Array<{
+          name: string;
+          value: string;
+          options: CookieOptions;
+        }>,
+      ) {
+        pendingCookies = cookiesToSet;
+      },
+    },
+  });
+
+  return {
+    supabase,
+    applyCookies(response: NextResponse) {
+      pendingCookies.forEach(({ name, value, options }) => {
+        response.cookies.set(name, value, options);
+      });
+      return response;
+    },
+  };
 }
 
 /**
@@ -45,15 +95,12 @@ export function createRouteHandlerClient() {
  * **严禁暴露到客户端代码**。仅在受信任的、需要管理员写日志的 Server Action 中使用。
  */
 export function createServiceClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = getServerSupabaseUrl();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
     throw new Error("Supabase 服务端特权客户端未配置：缺少 SERVICE_ROLE_KEY");
   }
-  // 使用动态 import 避免在 edge runtime 误引入
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { createClient: createRaw } = require("@supabase/supabase-js");
-  return createRaw(url, key, {
+  return createRawClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 }

@@ -51,13 +51,13 @@ export default function SettingsPage() {
   }
 
   return (
-    <>
+    <div data-crayon-page="settings" className="crayon-page">
       <PageHeader
         title="设置"
         description="外观、能力状态、账号"
       />
-      <div className="mx-auto w-full max-w-3xl space-y-4 px-4 py-4 sm:px-6">
-        <Card>
+      <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-4 sm:px-6">
+        <Card className="crayon-accent-yellow">
           <CardHeader>
             <CardTitle>外观</CardTitle>
           </CardHeader>
@@ -93,7 +93,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="crayon-accent-green">
           <CardHeader>
             <CardTitle>能力状态</CardTitle>
           </CardHeader>
@@ -108,7 +108,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="crayon-accent-red">
           <CardHeader>
             <CardTitle>账号</CardTitle>
           </CardHeader>
@@ -127,7 +127,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       </div>
-    </>
+    </div>
   );
 }
 

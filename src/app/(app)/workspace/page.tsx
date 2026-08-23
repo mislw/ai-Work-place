@@ -1,29 +1,27 @@
 "use client";
 
-import { useBootstrapData } from "@/hooks/use-bootstrap-data";
-import { WorkspaceGreeting } from "@/components/workspace/greeting";
 import { OverviewCards } from "@/components/workspace/overview-cards";
 import { TodayTodosCard } from "@/components/workspace/today-todos";
-import { QuickNoteCard } from "@/components/workspace/quick-note";
 import { WeekStripCard } from "@/components/workspace/week-strip";
 import { AiAssistantCard } from "@/components/workspace/ai-assistant";
-import { RecentDocsCard } from "@/components/workspace/recent-docs";
 
 export default function WorkspacePage() {
-  useBootstrapData();
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-5 px-4 py-5 sm:px-6 sm:py-6">
-      <WorkspaceGreeting />
+    <div
+      data-crayon-page="workspace"
+      className="crayon-page mx-auto w-full max-w-[1180px] space-y-4 px-4 py-4 sm:px-6 sm:py-5"
+    >
       <OverviewCards />
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <section
+        aria-label="今日工作"
+        className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-2"
+      >
         <TodayTodosCard />
-        <QuickNoteCard />
-      </div>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <WeekStripCard />
         <AiAssistantCard />
-      </div>
-      <RecentDocsCard />
+      </section>
+      <section aria-label="本周日历">
+        <WeekStripCard />
+      </section>
     </div>
   );
 }

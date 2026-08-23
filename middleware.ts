@@ -1,8 +1,21 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { isPreviewAuthEnabled } from "@/lib/auth/preview";
 
-const PUBLIC_PATHS = ["/login", "/register", "/forgot-password"];
+const PUBLIC_PATHS = ["/login", "/forgot-password"];
 
 export function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname.startsWith("/register")) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    url.search = "";
+    return NextResponse.redirect(url);
+  }
+
+  // Temporarily bypass login so the project can be previewed locally.
+  if (isPreviewAuthEnabled()) {
+    return NextResponse.next();
+  }
+
   const { pathname } = request.nextUrl;
   const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
   // Supabase 浏览器 SDK 会在 cookie 中保存 sb-access-token / sb-refresh-token。

@@ -1,5 +1,7 @@
 # dependencies
 /node_modules
+/services/harness-gateway/node_modules/
+/services/harness-gateway/dist/
 /.pnp
 .pnp.js
 

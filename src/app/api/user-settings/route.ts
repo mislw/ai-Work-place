@@ -9,7 +9,7 @@ const schema = z.object({
 });
 
 export async function GET() {
-  const supabase = createRouteHandlerClient();
+  const supabase = await createRouteHandlerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
@@ -23,7 +23,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const supabase = createRouteHandlerClient();
+  const supabase = await createRouteHandlerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

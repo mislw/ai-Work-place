@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request) {
   try {
     // 1) 身份校验
-    const supabase = createRouteHandlerClient();
+    const supabase = await createRouteHandlerClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();

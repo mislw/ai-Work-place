@@ -3,12 +3,15 @@ import { loginSchema, registerSchema, todoSchema, documentLinkSchema } from "@/l
 
 describe("auth schemas", () => {
   it("loginSchema 拒绝空密码", () => {
-    const r = loginSchema.safeParse({ email: "a@b.com", password: "" });
+    const r = loginSchema.safeParse({ username: "mislw", password: "" });
     expect(r.success).toBe(false);
   });
 
   it("loginSchema 通过合法输入", () => {
-    const r = loginSchema.safeParse({ email: "a@b.com", password: "12345678" });
+    const r = loginSchema.safeParse({
+      username: "mislw",
+      password: "12345678",
+    });
     expect(r.success).toBe(true);
   });
 

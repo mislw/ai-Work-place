@@ -11,7 +11,6 @@ import { EmptyState } from "@/components/common/empty-state";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { useDataStore, useUIStore } from "@/lib/stores/data";
-import { useBootstrapData } from "@/hooks/use-bootstrap-data";
 import { useAuth } from "@/hooks/use-auth";
 import {
   createDocument,
@@ -33,7 +32,6 @@ import { useDocumentOpen } from "@/components/documents/use-document-open";
 import { isTencentDocsConfiguredClient } from "@/lib/tencent-docs/client";
 
 export default function DocumentsPage() {
-  useBootstrapData();
   const { user } = useAuth();
   const docs = useDataStore((s) => s.documents);
   const upsertDocument = useDataStore((s) => s.upsertDocument);
@@ -101,7 +99,7 @@ export default function DocumentsPage() {
   }
 
   return (
-    <>
+    <div data-crayon-page="documents" className="crayon-page">
       <PageHeader
         title="腾讯文档"
         description="保存常用的腾讯文档链接。基础功能无需配置 API。"
@@ -111,7 +109,7 @@ export default function DocumentsPage() {
           </Button>
         }
       />
-      <div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-4 sm:px-6">
+      <div className="mx-auto w-full max-w-5xl space-y-4 px-4 py-4 sm:px-6">
         {!tencentConfigured ? (
           <Card className="border-dashed">
             <CardContent className="flex flex-col items-start gap-2 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
@@ -240,7 +238,7 @@ export default function DocumentsPage() {
         destructive
         onConfirm={confirmDelete}
       />
-    </>
+    </div>
   );
 }
 

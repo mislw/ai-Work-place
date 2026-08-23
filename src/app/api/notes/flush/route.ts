@@ -15,7 +15,7 @@ const schema = z.object({
 
 /** 页面关闭前的最后保存兜底（使用 sendBeacon 调用）。 */
 export async function POST(req: Request) {
-  const supabase = createRouteHandlerClient();
+  const supabase = await createRouteHandlerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();

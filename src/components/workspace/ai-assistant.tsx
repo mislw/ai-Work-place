@@ -12,6 +12,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AiSuggestionDialog } from "@/components/ai/ai-suggestion-dialog";
 import type { AiSuggestion, Todo } from "@/types/domain";
 import { useAuth } from "@/hooks/use-auth";
+import { getAppNow } from "@/lib/app-now";
+import { CrayonDecoration } from "@/components/common/crayon-decoration";
 
 const QUICK = [
   { key: "summarize_notes", label: "总结今日笔记", icon: BookOpen },
@@ -82,7 +84,7 @@ export function AiAssistantCard() {
   }
 
   async function handleQuick(key: string) {
-    const today = dateKey(new Date());
+    const today = dateKey(getAppNow());
     const todayTodos = todos.filter((t) => t.due_date === today);
     const todayNotes = notes.filter(
       (n) => n.created_at.slice(0, 10) === today,
@@ -137,24 +139,30 @@ export function AiAssistantCard() {
   }
 
   return (
-    <Card className="h-full">
-      <CardHeader className="flex flex-row items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-4 w-4" />
-          <CardTitle>AI 助手</CardTitle>
+    <Card className="workspace-feature-card workspace-ai-card relative h-full min-h-[388px] overflow-hidden">
+      <CardHeader className="workspace-card-header relative flex flex-row items-center justify-between pr-24">
+        <div className="workspace-ai-title-bubble flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-[#3c8dce]" />
+          <CardTitle className="text-lg">AI 助手</CardTitle>
         </div>
         {!aiConfigured ? (
           <span className="text-xs text-muted-foreground">未配置 AI（基础功能仍可用）</span>
         ) : null}
+        <CrayonDecoration
+          scene="head"
+          className="absolute -right-1 top-1 h-[76px] w-auto"
+        />
       </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-sm text-muted-foreground">有什么可以帮你？</p>
+      <CardContent className="flex min-h-[306px] flex-col gap-3">
+        <p className="workspace-speech-bubble w-fit text-sm font-semibold text-foreground">
+          有什么可以帮你？
+        </p>
         <div className="relative">
           <Textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="输入问题或任务，按 Enter 发送，Shift+Enter 换行"
-            rows={3}
+            rows={4}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -173,12 +181,13 @@ export function AiAssistantCard() {
             <ArrowUp className="h-4 w-4" />
           </Button>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           {QUICK.map((q) => (
             <Button
               key={q.key}
               variant="outline"
               size="sm"
+              className="min-w-0 px-2 text-[11px]"
               onClick={() => handleQuick(q.key)}
               disabled={!aiConfigured || !!loading}
             >
@@ -197,6 +206,12 @@ export function AiAssistantCard() {
           <div className="rounded-md border border-border bg-muted/30 p-3 text-sm leading-relaxed">
             <pre className="whitespace-pre-wrap font-sans">{output}</pre>
           </div>
+        ) : null}
+        {!output && !loading ? (
+          <CrayonDecoration
+            scene="assistant"
+            className="mt-auto h-auto max-h-[64px] w-full object-contain object-bottom"
+          />
         ) : null}
       </CardContent>
       <AiSuggestionDialog

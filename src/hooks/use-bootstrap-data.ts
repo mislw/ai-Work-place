@@ -8,6 +8,8 @@ import { listEvents } from "@/lib/data/events";
 import { listDocuments } from "@/lib/data/documents";
 import { useCollectionRealtime } from "@/hooks/use-realtime";
 import { createClient } from "@/lib/supabase/client";
+import { isSupabaseBrowserConfigured } from "@/lib/supabase/client";
+import { isPreviewAuthEnabled } from "@/lib/auth/preview";
 import type {
   Todo,
   Note,
@@ -17,6 +19,8 @@ import type {
 
 /** 启动后加载 4 类数据 + 启动 Realtime 订阅 + 探测 AI/Tencent 能力。 */
 export function useBootstrapData() {
+  const previewEnabled = isPreviewAuthEnabled();
+  const realtimeEnabled = !previewEnabled && isSupabaseBrowserConfigured();
   const setTodos = useDataStore((s) => s.setTodos);
   const setNotes = useDataStore((s) => s.setNotes);
   const setEvents = useDataStore((s) => s.setEvents);
@@ -74,6 +78,7 @@ export function useBootstrapData() {
   // Realtime：去重基于主键
   useCollectionRealtime({
     table: "todos",
+    enabled: realtimeEnabled,
     onChange: (payload) => {
       if (payload.eventType === "DELETE") {
         const old = payload.old as { id?: string };
@@ -85,6 +90,7 @@ export function useBootstrapData() {
   });
   useCollectionRealtime({
     table: "notes",
+    enabled: realtimeEnabled,
     onChange: (payload) => {
       if (payload.eventType === "DELETE") {
         const old = payload.old as { id?: string };
@@ -96,6 +102,7 @@ export function useBootstrapData() {
   });
   useCollectionRealtime({
     table: "calendar_events",
+    enabled: realtimeEnabled,
     onChange: (payload) => {
       if (payload.eventType === "DELETE") {
         const old = payload.old as { id?: string };
@@ -107,6 +114,7 @@ export function useBootstrapData() {
   });
   useCollectionRealtime({
     table: "document_links",
+    enabled: realtimeEnabled,
     onChange: (payload) => {
       if (payload.eventType === "DELETE") {
         const old = payload.old as { id?: string };
@@ -119,6 +127,7 @@ export function useBootstrapData() {
 
   // 监听网络重连后重新拉取一次
   useEffect(() => {
+    if (previewEnabled) return;
     if (typeof window === "undefined") return;
     const onOnline = async () => {
       const supabase = createClient();
@@ -136,5 +145,5 @@ export function useBootstrapData() {
     };
     window.addEventListener("online", onOnline);
     return () => window.removeEventListener("online", onOnline);
-  }, [setTodos, setNotes, setEvents, setDocuments]);
+  }, [previewEnabled, setTodos, setNotes, setEvents, setDocuments]);
 }

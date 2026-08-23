@@ -249,6 +249,454 @@ create policy "ai_logs_insert_own" on public.ai_action_logs
 -- 不允许前端 update/delete，避免污染审计日志
 
 -- =========================================================
+-- 7.1 assistant_action_receipts：创建类 Tool 的幂等收据
+-- =========================================================
+create table if not exists public.assistant_action_receipts (
+  request_id text primary key,
+  user_id uuid not null references auth.users (id) on delete cascade,
+  action_name text not null,
+  status text not null check (status in ('processing', 'completed')),
+  result jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists assistant_action_receipts_user_idx
+  on public.assistant_action_receipts (user_id, created_at desc);
+
+drop trigger if exists trg_assistant_action_receipts_updated_at
+  on public.assistant_action_receipts;
+create trigger trg_assistant_action_receipts_updated_at
+before update on public.assistant_action_receipts
+for each row execute function public.set_updated_at();
+
+alter table public.assistant_action_receipts enable row level security;
+
+create policy "assistant_receipts_select_own" on public.assistant_action_receipts
+  for select using (auth.uid() = user_id);
+create policy "assistant_receipts_insert_own" on public.assistant_action_receipts
+  for insert with check (auth.uid() = user_id);
+create policy "assistant_receipts_update_own" on public.assistant_action_receipts
+  for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "assistant_receipts_delete_own" on public.assistant_action_receipts
+  for delete using (auth.uid() = user_id);
+
+-- =========================================================
+-- 7.2 knowledge base：文件、版本、分块、建议、关系与异步任务
+-- =========================================================
+create table if not exists public.knowledge_collections (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  name text not null,
+  slug text not null,
+  description text,
+  kind text not null check (kind in ('project', 'area', 'resource', 'archive')),
+  obsidian_path text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, slug)
+);
+
+create table if not exists public.file_assets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  storage_key text not null,
+  original_name text not null,
+  mime_type text not null,
+  size_bytes bigint not null check (size_bytes >= 0),
+  sha256 text not null check (sha256 ~ '^[0-9a-f]{64}$'),
+  status text not null check (status in ('quarantine', 'available', 'rejected', 'deleted')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
+create unique index if not exists file_assets_active_hash_idx
+  on public.file_assets (user_id, sha256)
+  where status <> 'deleted';
+create index if not exists file_assets_user_created_idx
+  on public.file_assets (user_id, created_at desc);
+
+create table if not exists public.knowledge_documents (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  collection_id uuid references public.knowledge_collections (id) on delete set null,
+  asset_id uuid references public.file_assets (id) on delete set null,
+  title text not null,
+  document_type text not null default 'unknown',
+  language text,
+  status text not null check (
+    status in ('extracting', 'analyzing', 'ready', 'needs_attention', 'failed')
+  ),
+  stage text not null check (
+    stage in ('queued', 'extracting', 'chunking', 'analyzing', 'complete', 'failed')
+  ),
+  canonical_kind text not null default 'extracted'
+    check (canonical_kind in ('extracted', 'markdown', 'external')),
+  obsidian_path text,
+  summary text,
+  tags text[] not null default '{}',
+  error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists knowledge_documents_user_updated_idx
+  on public.knowledge_documents (user_id, updated_at desc);
+create index if not exists knowledge_documents_collection_idx
+  on public.knowledge_documents (user_id, collection_id, updated_at desc);
+create index if not exists knowledge_documents_status_idx
+  on public.knowledge_documents (user_id, status, updated_at desc);
+
+create table if not exists public.document_versions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  document_id uuid not null references public.knowledge_documents (id) on delete cascade,
+  version_number integer not null check (version_number > 0),
+  content_hash text not null check (content_hash ~ '^[0-9a-f]{64}$'),
+  normalized_text text not null,
+  parser text not null,
+  parser_version text not null,
+  extraction_metadata jsonb not null default '{}',
+  source_modified_at timestamptz,
+  created_at timestamptz not null default now(),
+  unique (document_id, version_number),
+  unique (document_id, content_hash, parser, parser_version)
+);
+
+alter table public.knowledge_documents
+  add column if not exists current_version_id uuid
+  references public.document_versions (id) on delete set null;
+
+create table if not exists public.document_chunks (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  document_id uuid not null references public.knowledge_documents (id) on delete cascade,
+  version_id uuid not null references public.document_versions (id) on delete cascade,
+  chunk_index integer not null check (chunk_index >= 0),
+  content text not null,
+  token_count integer check (token_count is null or token_count >= 0),
+  heading_path text[] not null default '{}',
+  page_start integer check (page_start is null or page_start > 0),
+  page_end integer check (page_end is null or page_end > 0),
+  char_start integer check (char_start is null or char_start >= 0),
+  char_end integer check (char_end is null or char_end >= 0),
+  search_vector tsvector generated always as (
+    to_tsvector('simple', coalesce(content, ''))
+  ) stored,
+  created_at timestamptz not null default now(),
+  unique (version_id, chunk_index)
+);
+
+create index if not exists document_chunks_search_idx
+  on public.document_chunks using gin (search_vector);
+create index if not exists document_chunks_document_idx
+  on public.document_chunks (user_id, document_id, chunk_index);
+
+create table if not exists public.knowledge_proposals (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  document_id uuid not null references public.knowledge_documents (id) on delete cascade,
+  kind text not null check (kind in ('archive', 'note', 'todo', 'calendar')),
+  title text not null,
+  payload jsonb not null default '{}',
+  confidence double precision not null default 0
+    check (confidence >= 0 and confidence <= 1),
+  status text not null default 'pending'
+    check (status in ('pending', 'confirmed', 'rejected')),
+  result jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists knowledge_proposals_document_idx
+  on public.knowledge_proposals (user_id, document_id, status);
+
+create table if not exists public.knowledge_relations (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  source_type text not null,
+  source_id uuid not null,
+  target_type text not null,
+  target_id uuid not null,
+  relation_type text not null
+    check (relation_type in ('source_of', 'derived_from', 'related_to', 'mentions', 'supersedes')),
+  evidence_chunk_id uuid references public.document_chunks (id) on delete set null,
+  confidence double precision check (confidence is null or (confidence >= 0 and confidence <= 1)),
+  creator text not null check (creator in ('user', 'assistant', 'importer')),
+  created_at timestamptz not null default now(),
+  unique (user_id, source_type, source_id, target_type, target_id, relation_type)
+);
+
+create index if not exists knowledge_relations_source_idx
+  on public.knowledge_relations (user_id, source_type, source_id);
+create index if not exists knowledge_relations_target_idx
+  on public.knowledge_relations (user_id, target_type, target_id);
+
+create table if not exists public.ingestion_jobs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  asset_id uuid not null references public.file_assets (id) on delete cascade,
+  document_id uuid not null references public.knowledge_documents (id) on delete cascade,
+  job_type text not null default 'ingest' check (job_type in ('ingest', 'analyze')),
+  status text not null default 'queued'
+    check (status in ('queued', 'processing', 'completed', 'failed')),
+  stage text not null default 'queued'
+    check (stage in ('queued', 'extracting', 'chunking', 'analyzing', 'complete', 'failed')),
+  progress integer not null default 0 check (progress >= 0 and progress <= 100),
+  attempt_count integer not null default 0 check (attempt_count >= 0),
+  available_at timestamptz not null default now(),
+  lease_owner text,
+  lease_expires_at timestamptz,
+  idempotency_key text not null,
+  error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, idempotency_key)
+);
+
+create index if not exists ingestion_jobs_claim_idx
+  on public.ingestion_jobs (status, available_at, created_at)
+  where status in ('queued', 'processing');
+create index if not exists ingestion_jobs_user_idx
+  on public.ingestion_jobs (user_id, created_at desc);
+
+drop trigger if exists trg_knowledge_collections_updated_at on public.knowledge_collections;
+create trigger trg_knowledge_collections_updated_at before update on public.knowledge_collections
+for each row execute function public.set_updated_at();
+drop trigger if exists trg_file_assets_updated_at on public.file_assets;
+create trigger trg_file_assets_updated_at before update on public.file_assets
+for each row execute function public.set_updated_at();
+drop trigger if exists trg_knowledge_documents_updated_at on public.knowledge_documents;
+create trigger trg_knowledge_documents_updated_at before update on public.knowledge_documents
+for each row execute function public.set_updated_at();
+drop trigger if exists trg_knowledge_proposals_updated_at on public.knowledge_proposals;
+create trigger trg_knowledge_proposals_updated_at before update on public.knowledge_proposals
+for each row execute function public.set_updated_at();
+drop trigger if exists trg_ingestion_jobs_updated_at on public.ingestion_jobs;
+create trigger trg_ingestion_jobs_updated_at before update on public.ingestion_jobs
+for each row execute function public.set_updated_at();
+
+alter table public.knowledge_collections enable row level security;
+alter table public.file_assets enable row level security;
+alter table public.knowledge_documents enable row level security;
+alter table public.document_versions enable row level security;
+alter table public.document_chunks enable row level security;
+alter table public.knowledge_proposals enable row level security;
+alter table public.knowledge_relations enable row level security;
+alter table public.ingestion_jobs enable row level security;
+
+create policy "knowledge_collections_all_own" on public.knowledge_collections
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "file_assets_select_own" on public.file_assets
+  for select using (auth.uid() = user_id);
+create policy "knowledge_documents_select_own" on public.knowledge_documents
+  for select using (auth.uid() = user_id);
+create policy "document_versions_select_own" on public.document_versions
+  for select using (auth.uid() = user_id);
+create policy "document_chunks_select_own" on public.document_chunks
+  for select using (auth.uid() = user_id);
+create policy "knowledge_proposals_select_own" on public.knowledge_proposals
+  for select using (auth.uid() = user_id);
+create policy "knowledge_relations_select_own" on public.knowledge_relations
+  for select using (auth.uid() = user_id);
+create policy "ingestion_jobs_select_own" on public.ingestion_jobs
+  for select using (auth.uid() = user_id);
+
+create or replace function public.register_knowledge_upload(
+  p_user_id uuid,
+  p_storage_key text,
+  p_original_name text,
+  p_mime_type text,
+  p_size_bytes bigint,
+  p_sha256 text,
+  p_idempotency_key text
+)
+returns table (
+  asset_id uuid,
+  document_id uuid,
+  job_id uuid,
+  reused_asset boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := p_user_id;
+  v_asset_id uuid;
+  v_document_id uuid;
+  v_job_id uuid;
+  v_reused boolean := false;
+begin
+  if v_user_id is null then
+    raise exception 'USER_ID_REQUIRED';
+  end if;
+
+  select j.asset_id, j.document_id, j.id
+    into v_asset_id, v_document_id, v_job_id
+  from public.ingestion_jobs j
+  where j.user_id = v_user_id and j.idempotency_key = p_idempotency_key;
+
+  if found then
+    return query select v_asset_id, v_document_id, v_job_id, true;
+    return;
+  end if;
+
+  select a.id into v_asset_id
+  from public.file_assets a
+  where a.user_id = v_user_id
+    and a.sha256 = p_sha256
+    and a.status <> 'deleted'
+  limit 1;
+
+  if found then
+    v_reused := true;
+  else
+    insert into public.file_assets (
+      user_id, storage_key, original_name, mime_type, size_bytes, sha256, status
+    ) values (
+      v_user_id, p_storage_key, p_original_name, p_mime_type,
+      p_size_bytes, p_sha256, 'quarantine'
+    )
+    returning id into v_asset_id;
+  end if;
+
+  insert into public.knowledge_documents (
+    user_id, asset_id, title, status, stage
+  ) values (
+    v_user_id, v_asset_id, p_original_name, 'extracting', 'queued'
+  ) returning id into v_document_id;
+
+  insert into public.ingestion_jobs (
+    user_id, asset_id, document_id, idempotency_key
+  ) values (
+    v_user_id, v_asset_id, v_document_id, p_idempotency_key
+  ) returning id into v_job_id;
+
+  return query select v_asset_id, v_document_id, v_job_id, v_reused;
+end;
+$$;
+
+create or replace function public.claim_ingestion_job(
+  p_worker_id text,
+  p_lease_seconds integer default 120
+)
+returns setof public.ingestion_jobs
+language sql
+security definer
+set search_path = public
+as $$
+  with candidate as (
+    select id
+    from public.ingestion_jobs
+    where (
+      status = 'queued' and available_at <= now()
+    ) or (
+      status = 'processing' and lease_expires_at < now()
+    )
+    order by available_at, created_at
+    for update skip locked
+    limit 1
+  )
+  update public.ingestion_jobs j
+  set status = 'processing',
+      lease_owner = p_worker_id,
+      lease_expires_at = now() + make_interval(secs => greatest(30, p_lease_seconds)),
+      attempt_count = j.attempt_count + 1
+  from candidate
+  where j.id = candidate.id
+  returning j.*;
+$$;
+
+create or replace function public.complete_ingestion_job(p_job_id uuid)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.ingestion_jobs
+  set status = 'completed', stage = 'complete', progress = 100,
+      lease_owner = null, lease_expires_at = null, error_code = null
+  where id = p_job_id;
+$$;
+
+create or replace function public.fail_ingestion_job(
+  p_job_id uuid,
+  p_error_code text
+)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.ingestion_jobs
+  set status = 'failed', stage = 'failed',
+      lease_owner = null, lease_expires_at = null,
+      error_code = left(p_error_code, 100)
+  where id = p_job_id;
+$$;
+
+create or replace function public.search_knowledge_chunks(
+  p_query text,
+  p_collection_id uuid default null,
+  p_limit integer default 20
+)
+returns table (
+  document_id uuid,
+  chunk_id uuid,
+  title text,
+  snippet text,
+  rank double precision,
+  page_start integer,
+  page_end integer,
+  heading_path text[],
+  asset_id uuid
+)
+language sql
+stable
+set search_path = public
+as $$
+  select
+    d.id,
+    c.id,
+    d.title,
+    ts_headline(
+      'simple',
+      c.content,
+      websearch_to_tsquery('simple', p_query),
+      'MaxWords=35, MinWords=10, StartSel=<mark>, StopSel=</mark>'
+    ),
+    ts_rank_cd(c.search_vector, websearch_to_tsquery('simple', p_query))::double precision,
+    c.page_start,
+    c.page_end,
+    c.heading_path,
+    d.asset_id
+  from public.document_chunks c
+  join public.knowledge_documents d on d.id = c.document_id
+  where c.user_id = auth.uid()
+    and d.user_id = auth.uid()
+    and (p_collection_id is null or d.collection_id = p_collection_id)
+    and c.search_vector @@ websearch_to_tsquery('simple', p_query)
+  order by ts_rank_cd(c.search_vector, websearch_to_tsquery('simple', p_query)) desc,
+           d.updated_at desc
+  limit least(greatest(p_limit, 1), 20);
+$$;
+
+grant execute on function public.search_knowledge_chunks(text, uuid, integer)
+  to authenticated;
+revoke all on function public.register_knowledge_upload(uuid, text, text, text, bigint, text, text)
+  from public, anon, authenticated;
+revoke all on function public.claim_ingestion_job(text, integer) from public, anon, authenticated;
+revoke all on function public.complete_ingestion_job(uuid) from public, anon, authenticated;
+revoke all on function public.fail_ingestion_job(uuid, text) from public, anon, authenticated;
+grant execute on function public.claim_ingestion_job(text, integer) to service_role;
+grant execute on function public.complete_ingestion_job(uuid) to service_role;
+grant execute on function public.fail_ingestion_job(uuid, text) to service_role;
+grant execute on function public.register_knowledge_upload(uuid, text, text, text, bigint, text, text)
+  to service_role;
+
+-- =========================================================
 -- 8. Realtime 订阅发布
 -- =========================================================
 -- Supabase Realtime 通过 publication 暴露表的变更。
@@ -257,6 +705,9 @@ alter publication supabase_realtime add table public.todos;
 alter publication supabase_realtime add table public.calendar_events;
 alter publication supabase_realtime add table public.notes;
 alter publication supabase_realtime add table public.document_links;
+alter publication supabase_realtime add table public.knowledge_documents;
+alter publication supabase_realtime add table public.knowledge_proposals;
+alter publication supabase_realtime add table public.ingestion_jobs;
 
 -- =========================================================
 -- 9. 注册时自动创建 profiles / user_settings

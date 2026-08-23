@@ -10,6 +10,7 @@ const Checkbox = React.forwardRef<
   React.ComponentPropsWithoutRef<typeof CheckboxPrimitive.Root>
 >(({ className, ...props }, ref) => (
   <CheckboxPrimitive.Root
+    data-ui="checkbox"
     ref={ref}
     className={cn(
       "peer h-4 w-4 shrink-0 rounded-sm border border-border shadow-sm",

@@ -18,7 +18,7 @@ type EmbedState =
 
 const FALLBACK_ERROR = "无法启动 AI 助手";
 const WRAPPER_CLASS =
-  "fixed inset-y-0 left-0 right-0 h-svh bg-background md:left-[240px] lg:left-[256px]";
+  "crayon-page crayon-paper fixed inset-y-0 left-0 right-0 h-svh bg-background md:left-[240px] lg:left-[256px]";
 
 export function HarnessEmbed() {
   const [attempt, setAttempt] = useState(0);
@@ -66,7 +66,7 @@ export function HarnessEmbed() {
   }, [attempt]);
 
   return (
-    <section className={WRAPPER_CLASS}>
+    <section data-crayon-page="assistant" className={WRAPPER_CLASS}>
       {state.status === "loading" ? (
         <div className="flex h-full w-full items-center justify-center">
           <Loader2
