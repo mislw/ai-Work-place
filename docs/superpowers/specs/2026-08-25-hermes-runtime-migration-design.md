@@ -8,12 +8,12 @@ Hermes becomes the source of truth for agent runs, model calls, tool orchestrati
 
 ## Decision
 
-Use the existing workspace UI with the Hermes Runs API. Do not embed the Hermes Dashboard as the assistant page.
+Use the existing workspace UI with the `hermes serve` TUI Gateway JSON-RPC/WebSocket protocol. Do not embed the Hermes Dashboard as the assistant page. The Runs API is optional for background or externally-triggered work and is not the primary interactive transport.
 
 Three approaches were considered:
 
 1. Embed the Hermes Dashboard. This is rejected because the Dashboard is an administration surface, does not match the workspace interaction model, and would recreate iframe authentication and styling problems.
-2. Replace only the runtime. This is selected because it preserves completed business integration while gaining Hermes memory, skills, subagents, scheduling, and tool orchestration.
+2. Replace only the runtime through the full-feature TUI Gateway. This is selected because it preserves completed business integration while gaining Hermes memory, skills, subagents, scheduling, and tool orchestration without reducing the native Hermes interaction model.
 3. Keep DeepSeek Harness. This remains the rollback path during migration but is not the target architecture.
 
 ## Target Architecture
@@ -21,9 +21,9 @@ Three approaches were considered:
 ```text
 Browser /assistant
   -> Personal AI Workspace native assistant UI
-  -> same-origin Next.js Hermes proxy
-  -> Hermes Runs API and SSE event stream
-  -> Hermes agent runtime
+  -> same-origin authenticated WebSocket gateway
+  -> hermes serve TUI Gateway JSON-RPC
+  -> Hermes Agent runtime
   -> authenticated Streamable HTTP MCP
   -> existing workspace tool service
   -> calendar / todos / notes / documents / knowledge
@@ -35,15 +35,19 @@ Browser knowledge upload
   -> PDF / DOCX / XLSX / Markdown / text / image extraction
   -> owner-scoped knowledge records
   -> knowledge MCP tools
+
+Optional background automation
+  -> authenticated server-side Runs client
+  -> Hermes Runs API
 ```
 
-The browser never receives the Hermes service credential or the internal MCP secret. Hermes does not receive Supabase service-role credentials, the NAS root, the Docker socket, or access to deployment files.
+The browser never receives a reusable Hermes service credential or the internal MCP secret. The same-origin gateway authorizes the workspace session before proxying the Hermes protocol. Hermes does not receive Supabase service-role credentials, the NAS root, the Docker socket, or access to deployment files.
 
 ## Components
 
 ### Native Assistant
 
-`/assistant` returns to a workspace-owned interface instead of an iframe. The existing native assistant components may be reused where their behavior matches the Runs API, but Harness-specific RPC and event assumptions must be removed rather than emulated.
+`/assistant` returns to a workspace-owned interface instead of an iframe. The existing native assistant components may be reused where their behavior matches the TUI Gateway protocol, but Harness-specific RPC and event assumptions must be removed rather than emulated.
 
 The interface must support:
 
@@ -56,15 +60,15 @@ The interface must support:
 - the existing knowledge upload tray for office files and documents;
 - explicit disconnected, failed, and recoverable states.
 
-### Hermes Proxy
+### Hermes Gateway Proxy
 
-Add a same-origin server boundary between the browser and Hermes. It authenticates the workspace user, maps the user to a Hermes profile or conversation namespace, attaches the internal Hermes API credential, validates request sizes, and forwards Runs API events without buffering the stream.
+Add a same-origin WebSocket boundary between the browser and `hermes serve`. It authenticates the workspace user during upgrade, maps the user to a Hermes profile or conversation namespace, validates frame sizes and origins, and forwards JSON-RPC requests, responses, notifications, and approval events without translating them into a second agent protocol.
 
-The proxy exposes only the operations needed by the assistant UI. It does not become a generic pass-through to every Hermes administrative endpoint.
+The proxy exposes only the methods needed by the assistant UI. It does not become a generic pass-through to every Hermes administrative endpoint. A small server-only Runs API client may be added later for background jobs, but the browser does not use it for interactive chat.
 
 ### Hermes Runtime
 
-Run Hermes as a separate container with persistent state and a dedicated workspace volume. Use the Runs API for interactive work. The legacy chat-completions endpoint is not part of the integration contract.
+Run Hermes as a separate container with persistent state and a dedicated workspace volume. Start `hermes serve` for interactive work. The legacy chat-completions endpoint is not part of the integration contract.
 
 Hermes receives the existing workspace MCP endpoint as a remote Streamable HTTP server. The server is configured as untrusted so write-capable tools require approval. Read-only behavior continues to be communicated through MCP annotations.
 
@@ -84,7 +88,7 @@ An uploaded file is not described as available to Hermes until processing succee
 
 The workspace user owns the browser session. The server maps that identity to a stable Hermes profile namespace and stores the relationship server-side.
 
-Conversation identifiers returned by Hermes are opaque. Every read, resume, cancel, or approval request must prove that the current workspace user owns the mapped conversation. Client-provided profile paths or arbitrary Hermes run IDs are never trusted directly.
+Conversation and session identifiers returned by Hermes are opaque. Every read, resume, branch, cancel, or approval request must prove that the current workspace user owns the mapped profile namespace. Client-provided profile paths, session paths, or arbitrary run IDs are never trusted directly.
 
 For the current single-owner deployment, one Hermes profile is sufficient. The mapping must nevertheless avoid hard-coding a browser-supplied owner so a future multi-user deployment does not expose shared memory.
 
@@ -93,9 +97,9 @@ For the current single-owner deployment, one Hermes profile is sufficient. The m
 1. Hermes requests a tool call.
 2. Read-only tools execute immediately.
 3. A write-capable tool produces an approval event before execution.
-4. The proxy records the pending approval against the authenticated user and run.
+4. The gateway records the pending approval against the authenticated user and Hermes session.
 5. The native assistant renders a specific description of the proposed operation and its arguments.
-6. Approval or rejection is sent through the Hermes Runs approval operation.
+6. Approval or rejection is sent through the matching TUI Gateway approval-resolution method.
 7. The workspace tool service still validates owner scope, schema, and idempotency at execution time.
 
 Approval is not treated as authorization to bypass server validation. A stale, replayed, cross-user, or already-resolved approval is rejected.
@@ -103,8 +107,8 @@ Approval is not treated as authorization to bypass server validation. A stale, r
 ## Error Handling and Recovery
 
 - If Hermes is unavailable, the assistant shows a retryable service error; the rest of the workspace remains usable.
-- If the SSE connection drops, the UI resumes or reloads the run from the last known event cursor instead of duplicating the prompt.
-- If an approval response is lost, the current run state is read before retrying it.
+- If the WebSocket connection drops, the UI reconnects, restores the selected Hermes session, and reads current history before accepting another prompt.
+- If an approval response is lost, pending approval state is read or reconciled before retrying it.
 - If a write tool succeeds but the event stream disconnects, its stable request ID prevents duplicate business data on resume.
 - If the knowledge worker is unavailable, uploads remain visibly queued or failed and are not silently sent as model context.
 - Unsupported Hermes events are logged with safe metadata and shown as a generic recoverable state; secrets and full private document content are excluded from logs.
@@ -119,7 +123,7 @@ During migration, Compose runs both runtimes:
 - `harness`: temporary rollback runtime;
 - `harness-gateway`: temporary compatibility and MCP gateway, renamed only after migration stability is proven.
 
-Hermes is reachable only on the private Compose network. The app exposes the authenticated same-origin proxy. The Hermes container receives a dedicated working directory and no broad NAS mount.
+Hermes is reachable only on the private Compose network. The app exposes the authenticated same-origin WebSocket proxy. The Hermes container receives a dedicated working directory and no broad NAS mount.
 
 Local development starts the app, Hermes, and the required gateway without depending on the remote production gateway. Port selection remains configurable and loopback-only.
 
@@ -129,12 +133,12 @@ Local development starts the app, Hermes, and the required gateway without depen
 
 - Add Hermes configuration, container, health check, and persistent volumes.
 - Connect Hermes to the existing MCP server with untrusted tool policy.
-- Add a server-side Runs API client and focused contract tests.
+- Add a TUI Gateway JSON-RPC client, same-origin WebSocket proxy, and focused contract tests.
 - Keep `/assistant` on Harness by default and provide a server-controlled Hermes feature flag.
 
 ### Stage 2: Native Assistant Cutover
 
-- Adapt the native assistant to Runs API events, approvals, cancellation, and history.
+- Adapt the native assistant to TUI Gateway notifications, approvals, clarification requests, cancellation, sessions, and history.
 - Keep the existing knowledge upload UI.
 - Make Hermes the default only after local browser acceptance passes.
 - Preserve an operator-only rollback flag to return to Harness.
@@ -155,8 +159,8 @@ Removal includes obsolete iframe bootstrap, Harness-specific authentication, rel
 
 ### Automated
 
-- Runs API request, stream parsing, resume, cancel, and error contract tests;
-- ownership checks for run, conversation, and approval operations;
+- TUI Gateway handshake, JSON-RPC parsing, reconnect, cancel, and error contract tests;
+- ownership checks for profile, session, and approval operations;
 - read-tool immediate execution and write-tool approval tests;
 - approval rejection, replay, and cross-user denial tests;
 - MCP discovery and all twenty tool schemas;
