@@ -86,6 +86,15 @@ describe("workspace intake contracts", () => {
     },
   );
 
+  it("rejects backslashes that browser URL normalization can externalize", () => {
+    expect(() =>
+      workspacePageContextV1Schema.parse({
+        ...PAGE_CONTEXT,
+        route: "/\\evil.example/todos",
+      }),
+    ).toThrow();
+  });
+
   it.each(["/todos\n/settings", "/todos\n"])(
     "rejects control characters in internal route %j",
     (route) => {

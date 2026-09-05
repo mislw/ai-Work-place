@@ -308,7 +308,8 @@ create table if not exists public.file_assets (
   status text not null check (status in ('quarantine', 'available', 'rejected', 'deleted')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  deleted_at timestamptz
+  deleted_at timestamptz,
+  unique (id, user_id)
 );
 
 create unique index if not exists file_assets_active_hash_idx
@@ -338,7 +339,8 @@ create table if not exists public.knowledge_documents (
   tags text[] not null default '{}',
   error_code text,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  unique (id, user_id)
 );
 
 create index if not exists knowledge_documents_user_updated_idx
@@ -452,7 +454,8 @@ create table if not exists public.ingestion_jobs (
   error_code text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (user_id, idempotency_key)
+  unique (user_id, idempotency_key),
+  unique (id, user_id)
 );
 
 create index if not exists ingestion_jobs_claim_idx
@@ -490,9 +493,9 @@ create table if not exists public.workspace_intake_items (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
   batch_id uuid not null,
-  asset_id uuid not null references public.file_assets (id) on delete restrict,
-  document_id uuid not null references public.knowledge_documents (id) on delete restrict,
-  job_id uuid not null references public.ingestion_jobs (id) on delete restrict,
+  asset_id uuid not null,
+  document_id uuid not null,
+  job_id uuid not null,
   hermes_run_id text,
   status text not null check (
     status in (
@@ -516,7 +519,19 @@ create table if not exists public.workspace_intake_items (
   constraint workspace_intake_items_batch_owner_fk
     foreign key (batch_id, user_id)
     references public.workspace_intake_batches (id, user_id)
-    on delete cascade
+    on delete cascade,
+  constraint workspace_intake_items_asset_owner_fk
+    foreign key (asset_id, user_id)
+    references public.file_assets (id, user_id)
+    on delete restrict,
+  constraint workspace_intake_items_document_owner_fk
+    foreign key (document_id, user_id)
+    references public.knowledge_documents (id, user_id)
+    on delete restrict,
+  constraint workspace_intake_items_job_owner_fk
+    foreign key (job_id, user_id)
+    references public.ingestion_jobs (id, user_id)
+    on delete restrict
 );
 
 create table if not exists public.workspace_action_steps (

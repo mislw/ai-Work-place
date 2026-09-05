@@ -140,6 +140,42 @@ describe("workspace intake database foundation", () => {
     );
   });
 
+  it("enforces intake resource ownership with ordered composite foreign keys", () => {
+    const assetsTable = extractSqlDefinition(
+      sql,
+      "create table if not exists public.file_assets",
+      "\n);",
+    );
+    const documentsTable = extractSqlDefinition(
+      sql,
+      "create table if not exists public.knowledge_documents",
+      "\n);",
+    );
+    const jobsTable = extractSqlDefinition(
+      sql,
+      "create table if not exists public.ingestion_jobs",
+      "\n);",
+    );
+    const itemsTable = extractSqlDefinition(
+      sql,
+      "create table if not exists public.workspace_intake_items",
+      "\n);",
+    );
+
+    expect(assetsTable).toContain("unique (id, user_id)");
+    expect(documentsTable).toContain("unique (id, user_id)");
+    expect(jobsTable).toContain("unique (id, user_id)");
+    expect(itemsTable).toMatch(
+      /foreign key \(asset_id, user_id\)[\s\S]*?references public\.file_assets \(id, user_id\)[\s\S]*?on delete restrict/,
+    );
+    expect(itemsTable).toMatch(
+      /foreign key \(document_id, user_id\)[\s\S]*?references public\.knowledge_documents \(id, user_id\)[\s\S]*?on delete restrict/,
+    );
+    expect(itemsTable).toMatch(
+      /foreign key \(job_id, user_id\)[\s\S]*?references public\.ingestion_jobs \(id, user_id\)[\s\S]*?on delete restrict/,
+    );
+  });
+
   it("defines idempotent registration and lease-based claiming RPCs", () => {
     expect(sql).toContain(
       "create or replace function public.register_workspace_intake_batch",

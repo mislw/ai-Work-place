@@ -39,6 +39,7 @@ const internalWorkspaceRouteSchema = z
     (route) =>
       route.startsWith("/") &&
       !route.startsWith("//") &&
+      !route.includes("\\") &&
       !/^[a-z][a-z0-9+.-]*:/i.test(route) &&
       !/[\u0000-\u001f\u007f]/.test(route),
     { message: "Route must be an internal absolute workspace path" },
