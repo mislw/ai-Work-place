@@ -3,6 +3,18 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loginSchema, registerSchema, todoSchema, documentLinkSchema } from "@/lib/schemas";
 
+function extractSqlDefinition(
+  sql: string,
+  marker: string,
+  terminator: string,
+): string {
+  const start = sql.indexOf(marker);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = sql.indexOf(terminator, start);
+  expect(end).toBeGreaterThan(start);
+  return sql.slice(start, end + terminator.length);
+}
+
 describe("auth schemas", () => {
   it("loginSchema 拒绝空密码", () => {
     const r = loginSchema.safeParse({ username: "mislw", password: "" });
@@ -101,6 +113,33 @@ describe("workspace intake database foundation", () => {
     );
   });
 
+  it("enforces intake owner and hierarchy consistency with composite keys", () => {
+    const batchesTable = extractSqlDefinition(
+      sql,
+      "create table if not exists public.workspace_intake_batches",
+      "\n);",
+    );
+    const itemsTable = extractSqlDefinition(
+      sql,
+      "create table if not exists public.workspace_intake_items",
+      "\n);",
+    );
+    const stepsTable = extractSqlDefinition(
+      sql,
+      "create table if not exists public.workspace_action_steps",
+      "\n);",
+    );
+
+    expect(batchesTable).toContain("unique (id, user_id)");
+    expect(itemsTable).toMatch(
+      /foreign key \(batch_id, user_id\)[\s\S]*?references public\.workspace_intake_batches \(id, user_id\)/,
+    );
+    expect(itemsTable).toContain("unique (id, user_id, batch_id)");
+    expect(stepsTable).toMatch(
+      /foreign key \(item_id, user_id, batch_id\)[\s\S]*?references public\.workspace_intake_items \(id, user_id, batch_id\)/,
+    );
+  });
+
   it("defines idempotent registration and lease-based claiming RPCs", () => {
     expect(sql).toContain(
       "create or replace function public.register_workspace_intake_batch",
@@ -108,8 +147,14 @@ describe("workspace intake database foundation", () => {
     expect(sql).toContain(
       "create or replace function public.claim_workspace_intake_item",
     );
-    expect(sql).toMatch(/for update skip locked/i);
-    expect(sql).toMatch(
+    const claimFunction = extractSqlDefinition(
+      sql,
+      "create or replace function public.claim_workspace_intake_item",
+      "$$;",
+    );
+
+    expect(claimFunction).toMatch(/for update of i skip locked/i);
+    expect(claimFunction).toMatch(
       /d\.status in \('ready', 'needs_attention'\)/,
     );
     expect(sql).toMatch(

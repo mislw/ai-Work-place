@@ -30,6 +30,28 @@ const PAGE_CONTEXT = {
   trigger: { kind: "file_drop" as const, clientBatchId: "batch-1" },
 };
 
+const VALID_PLAN = {
+  version: 1 as const,
+  documentId: UUIDS.document,
+  summary: "整理完成",
+  confidence: 0.8,
+  actions: [{ kind: "todo.create" as const, input: { title: "整理任务" } }],
+  warnings: [],
+};
+
+const CREATE_REQUEST = {
+  clientBatchId: "batch-1",
+  sourceType: "file_drop" as const,
+  pageContext: PAGE_CONTEXT,
+  items: [
+    {
+      assetId: UUIDS.asset,
+      documentId: UUIDS.document,
+      jobId: UUIDS.job,
+    },
+  ],
+};
+
 describe("workspace intake contracts", () => {
   it("accepts a bounded todos-page drop context", () => {
     expect(workspacePageContextV1Schema.parse(PAGE_CONTEXT)).toEqual(
@@ -37,18 +59,56 @@ describe("workspace intake contracts", () => {
     );
   });
 
-  it("rejects owner ids, unknown writes, and mismatched plan shape", () => {
+  it("rejects owner ids supplied with a valid plan", () => {
     expect(() =>
       workspaceIntakePlanV1Schema.parse({
-        version: 1,
-        documentId: UUIDS.asset,
-        summary: "整理完成",
-        confidence: 0.8,
+        ...VALID_PLAN,
         ownerId: "owner-2",
-        actions: [{ kind: "todo.delete", input: { id: "todo-1" } }],
-        warnings: [],
       }),
     ).toThrow();
+  });
+
+  it("rejects unknown write actions without relying on another invalid field", () => {
+    expect(() =>
+      workspaceIntakePlanV1Schema.parse({
+        ...VALID_PLAN,
+        actions: [{ kind: "todo.delete", input: { id: "todo-1" } }],
+      }),
+    ).toThrow();
+  });
+
+  it.each(["https://example.com/todos", "//example.com/todos"])(
+    "rejects external route %s",
+    (route) => {
+      expect(() =>
+        workspacePageContextV1Schema.parse({ ...PAGE_CONTEXT, route }),
+      ).toThrow();
+    },
+  );
+
+  it.each(["/todos\n/settings", "/todos\n"])(
+    "rejects control characters in internal route %j",
+    (route) => {
+      expect(() =>
+        workspacePageContextV1Schema.parse({
+          ...PAGE_CONTEXT,
+          route,
+        }),
+      ).toThrow();
+    },
+  );
+
+  it.each([
+    {
+      name: "source type",
+      request: { ...CREATE_REQUEST, sourceType: "file_picker" as const },
+    },
+    {
+      name: "client batch id",
+      request: { ...CREATE_REQUEST, clientBatchId: "batch-2" },
+    },
+  ])("rejects a conflicting trigger $name", ({ request }) => {
+    expect(() => createIntakeBatchRequestSchema.parse(request)).toThrow();
   });
 
   it("limits each file plan to 30 actions", () => {
@@ -161,22 +221,14 @@ describe("workspace intake contracts", () => {
   });
 
   it("accepts durable item ids without accepting an owner id", () => {
-    const request = {
-      clientBatchId: "batch-1",
-      sourceType: "file_drop" as const,
-      pageContext: PAGE_CONTEXT,
-      items: [
-        {
-          assetId: UUIDS.asset,
-          documentId: UUIDS.document,
-          jobId: UUIDS.job,
-        },
-      ],
-    };
-
-    expect(createIntakeBatchRequestSchema.parse(request)).toEqual(request);
+    expect(createIntakeBatchRequestSchema.parse(CREATE_REQUEST)).toEqual(
+      CREATE_REQUEST,
+    );
     expect(() =>
-      createIntakeBatchRequestSchema.parse({ ...request, userId: UUIDS.item }),
+      createIntakeBatchRequestSchema.parse({
+        ...CREATE_REQUEST,
+        userId: UUIDS.item,
+      }),
     ).toThrow();
   });
 });

@@ -31,10 +31,23 @@ const pageFiltersSchema = z
     message: "Page context supports at most 20 filters",
   });
 
+const internalWorkspaceRouteSchema = z
+  .string()
+  .min(1)
+  .max(2_000)
+  .refine(
+    (route) =>
+      route.startsWith("/") &&
+      !route.startsWith("//") &&
+      !/^[a-z][a-z0-9+.-]*:/i.test(route) &&
+      !/[\u0000-\u001f\u007f]/.test(route),
+    { message: "Route must be an internal absolute workspace path" },
+  );
+
 export const workspacePageContextV1Schema = z
   .object({
     version: z.literal(1),
-    route: z.string().trim().min(1).max(2_000),
+    route: internalWorkspaceRouteSchema,
     pageType: pageTypeSchema,
     capturedAt: z.string().datetime(),
     timezone: z.string().trim().min(1).max(100),
@@ -229,7 +242,25 @@ export const createIntakeBatchRequestSchema = z
       .min(1)
       .max(20),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    if (request.sourceType !== request.pageContext.trigger.kind) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sourceType"],
+        message: "Source type must match page context trigger kind",
+      });
+    }
+    if (
+      request.clientBatchId !== request.pageContext.trigger.clientBatchId
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["clientBatchId"],
+        message: "Client batch ID must match page context trigger",
+      });
+    }
+  });
 
 export type WorkspacePageContextV1 = z.infer<
   typeof workspacePageContextV1Schema

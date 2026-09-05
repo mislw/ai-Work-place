@@ -482,13 +482,14 @@ create table if not exists public.workspace_intake_batches (
   updated_at timestamptz not null default now(),
   completed_at timestamptz,
   undone_at timestamptz,
-  unique (user_id, client_batch_id)
+  unique (user_id, client_batch_id),
+  unique (id, user_id)
 );
 
 create table if not exists public.workspace_intake_items (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
-  batch_id uuid not null references public.workspace_intake_batches (id) on delete cascade,
+  batch_id uuid not null,
   asset_id uuid not null references public.file_assets (id) on delete restrict,
   document_id uuid not null references public.knowledge_documents (id) on delete restrict,
   job_id uuid not null references public.ingestion_jobs (id) on delete restrict,
@@ -510,14 +511,19 @@ create table if not exists public.workspace_intake_items (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   completed_at timestamptz,
-  unique (batch_id, document_id)
+  unique (batch_id, document_id),
+  unique (id, user_id, batch_id),
+  constraint workspace_intake_items_batch_owner_fk
+    foreign key (batch_id, user_id)
+    references public.workspace_intake_batches (id, user_id)
+    on delete cascade
 );
 
 create table if not exists public.workspace_action_steps (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users (id) on delete cascade,
-  batch_id uuid not null references public.workspace_intake_batches (id) on delete cascade,
-  item_id uuid not null references public.workspace_intake_items (id) on delete cascade,
+  batch_id uuid not null,
+  item_id uuid not null,
   sequence integer not null check (sequence >= 0),
   action_name text not null,
   forward_input jsonb not null,
@@ -534,7 +540,11 @@ create table if not exists public.workspace_action_steps (
   updated_at timestamptz not null default now(),
   completed_at timestamptz,
   undone_at timestamptz,
-  unique (item_id, sequence)
+  unique (item_id, sequence),
+  constraint workspace_action_steps_item_owner_batch_fk
+    foreign key (item_id, user_id, batch_id)
+    references public.workspace_intake_items (id, user_id, batch_id)
+    on delete cascade
 );
 
 create index if not exists workspace_intake_batches_user_recent_idx
