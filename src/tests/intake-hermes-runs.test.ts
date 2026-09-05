@@ -44,7 +44,7 @@ describe("Hermes Runs client", () => {
     process.env.AGENT_INTERNAL_ORIGIN = ORIGIN;
     process.env.AGENT_SERVICE_SECRET = SERVICE_SECRET;
     fetchMock.mockResolvedValue(
-      Response.json({ run_id: "run-1", status: "queued" }),
+      Response.json({ run_id: "run-1", status: "started" }),
     );
 
     await expect(
@@ -57,7 +57,7 @@ describe("Hermes Runs client", () => {
           documentId: "11111111-1111-4111-8111-111111111111",
         },
       }),
-    ).resolves.toEqual({ runId: "run-1", status: "queued" });
+    ).resolves.toEqual({ runId: "run-1", status: "started" });
   });
 
   it("does not accept browser-exposed environment aliases", () => {
@@ -67,9 +67,9 @@ describe("Hermes Runs client", () => {
     expect(() => new HermesRunsClient()).toThrow("INVALID_HERMES_RUN_CONFIG");
   });
 
-  it("creates an owner-scoped intake run through the internal Gateway", async () => {
+  it("uses the pinned Hermes run-create contract through the internal Gateway", async () => {
     fetchMock.mockResolvedValue(
-      Response.json({ run_id: "run-1", status: "queued" }),
+      Response.json({ run_id: "run-1", status: "started" }),
     );
     const client = createClient();
 
@@ -83,7 +83,7 @@ describe("Hermes Runs client", () => {
           documentId: "11111111-1111-4111-8111-111111111111",
         },
       }),
-    ).resolves.toEqual({ runId: "run-1", status: "queued" });
+    ).resolves.toEqual({ runId: "run-1", status: "started" });
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${ORIGIN}/internal/hermes/runs`,
@@ -96,7 +96,7 @@ describe("Hermes Runs client", () => {
         }),
         body: JSON.stringify({
           session_id: "intake:owner-1:item-1",
-          prompt: "plan this document",
+          input: "plan this document",
           metadata: {
             purpose: "workspace_file_intake",
             item_id: "item-1",
@@ -105,27 +105,44 @@ describe("Hermes Runs client", () => {
         }),
       }),
     );
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).not.toHaveProperty(
-      "ownerId",
-    );
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body).not.toHaveProperty("prompt");
+    expect(body).not.toHaveProperty("ownerId");
   });
 
-  it("validates status responses and normalizes optional output and error code", async () => {
+  it.each([
+    "queued",
+    "running",
+    "waiting_for_approval",
+    "completed",
+    "failed",
+    "stopping",
+    "cancelled",
+  ] as const)("accepts the pinned Hermes %s lifecycle status", async (status) => {
+    const upstreamError = "private provider detail";
     fetchMock.mockResolvedValue(
       Response.json({
+        object: "hermes.run",
         run_id: "run-1",
-        status: "failed",
-        output: '{"version":1}',
-        error: { code: "MODEL_FAILED" },
+        status,
+        created_at: 1_757_059_200,
+        updated_at: 1_757_059_201,
+        session_id: "intake:owner-1:item-1",
+        model: "hermes-test",
+        ...(status === "completed" ? { output: '{"version":1}' } : {}),
+        ...(status === "failed" ? { error: upstreamError } : {}),
       }),
     );
 
-    await expect(createClient().getRun("run-1")).resolves.toEqual({
+    const result = await createClient().getRun("run-1");
+
+    expect(result).toEqual({
       runId: "run-1",
-      status: "failed",
-      output: '{"version":1}',
-      errorCode: "MODEL_FAILED",
+      status,
+      ...(status === "completed" ? { output: '{"version":1}' } : {}),
+      ...(status === "failed" ? { errorCode: "HERMES_RUN_FAILED" } : {}),
     });
+    expect(JSON.stringify(result)).not.toContain(upstreamError);
     expect(fetchMock).toHaveBeenCalledWith(
       `${ORIGIN}/internal/hermes/runs/run-1`,
       expect.objectContaining({ method: "GET" }),
@@ -134,12 +151,12 @@ describe("Hermes Runs client", () => {
 
   it("posts stop requests and validates their response", async () => {
     fetchMock.mockResolvedValue(
-      Response.json({ run_id: "run-1", status: "stopped" }),
+      Response.json({ run_id: "run-1", status: "stopping" }),
     );
 
     await expect(createClient().stopRun("run-1")).resolves.toEqual({
       runId: "run-1",
-      status: "stopped",
+      status: "stopping",
     });
     expect(fetchMock).toHaveBeenCalledWith(
       `${ORIGIN}/internal/hermes/runs/run-1/stop`,
@@ -148,15 +165,22 @@ describe("Hermes Runs client", () => {
   });
 
   it("returns a successful SSE response without consuming its stream", async () => {
+    vi.useFakeTimers();
     const response = new Response("data: ready\n\n", {
       headers: { "content-type": "text/event-stream; charset=utf-8" },
     });
-    fetchMock.mockResolvedValue(response);
+    const requestState: { signal?: AbortSignal } = {};
+    fetchMock.mockImplementation((_url, init) => {
+      requestState.signal = init?.signal ?? undefined;
+      return Promise.resolve(response);
+    });
 
-    const result = await createClient().getEvents("run-1");
+    const result = await createClient({ timeoutMs: 25 }).getEvents("run-1");
+    await vi.advanceTimersByTimeAsync(100);
 
     expect(result).toBe(response);
     expect(result.bodyUsed).toBe(false);
+    expect(requestState.signal?.aborted).toBe(false);
     expect(fetchMock).toHaveBeenCalledWith(
       `${ORIGIN}/internal/hermes/runs/run-1/events`,
       expect.objectContaining({
@@ -188,6 +212,53 @@ describe("Hermes Runs client", () => {
     await vi.advanceTimersByTimeAsync(25);
 
     await result;
+  });
+
+  it("keeps the JSON timeout active while the response body is consumed", async () => {
+    vi.useFakeTimers();
+    const requestState: { signal?: AbortSignal } = {};
+    let rejectBody: ((reason?: unknown) => void) | undefined;
+    fetchMock.mockImplementation((_url, init) => {
+      requestState.signal = init?.signal ?? undefined;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: () =>
+          new Promise<unknown>((_resolve, reject) => {
+            rejectBody = reject;
+            requestState.signal?.addEventListener("abort", () => {
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          }),
+      } as Response);
+    });
+    let outcome: unknown;
+    const pending = createClient({ timeoutMs: 25 })
+      .getRun("run-1")
+      .then(
+        (value) => {
+          outcome = value;
+        },
+        (error: unknown) => {
+          outcome = error;
+        },
+      );
+
+    await vi.advanceTimersByTimeAsync(25);
+
+    try {
+      expect(requestState.signal?.aborted).toBe(true);
+      expect(outcome).toMatchObject({
+        code: "HERMES_RUN_TIMEOUT",
+        message: "HERMES_RUN_TIMEOUT",
+      });
+    } finally {
+      if (!requestState.signal?.aborted) {
+        rejectBody?.(new Error("test cleanup"));
+        await pending;
+      }
+    }
   });
 
   it.each([

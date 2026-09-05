@@ -97,11 +97,7 @@ export class IntakePlanError extends Error {
 export function buildIntakeRunRequest(
   input: BuildIntakeRunRequestInput,
 ): CreateHermesRunInput {
-  const preliminaryTextCharacters = countTextCharacters(input.preliminary);
-  if (preliminaryTextCharacters > MAX_PRELIMINARY_TEXT_CHARACTERS) {
-    throw new IntakePlanError("INTAKE_PROMPT_TOO_LARGE");
-  }
-
+  serializeBounded(input.preliminary, MAX_PRELIMINARY_TEXT_CHARACTERS);
   const pageContextJson = serializeBounded(
     input.pageContext,
     MAX_PAGE_CONTEXT_CHARACTERS,
@@ -191,26 +187,6 @@ function serializeBounded(value: unknown, maximum: number): string {
     throw new IntakePlanError("INTAKE_PROMPT_TOO_LARGE");
   }
   return serialized;
-}
-
-function countTextCharacters(value: unknown): number {
-  const seen = new Set<object>();
-
-  function visit(current: unknown): number {
-    if (typeof current === "string") return current.length;
-    if (typeof current !== "object" || current === null) return 0;
-    if (seen.has(current)) {
-      throw new IntakePlanError("INTAKE_PROMPT_TOO_LARGE");
-    }
-    seen.add(current);
-    const total = Array.isArray(current)
-      ? current.reduce((sum, entry) => sum + visit(entry), 0)
-      : Object.values(current).reduce((sum, entry) => sum + visit(entry), 0);
-    seen.delete(current);
-    return total;
-  }
-
-  return visit(value);
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {

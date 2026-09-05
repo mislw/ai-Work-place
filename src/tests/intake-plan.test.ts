@@ -6,7 +6,10 @@ import {
   parseTerminalIntakePlan,
 } from "@/lib/intake/plan";
 import type { WorkspacePageContextV1 } from "@/lib/intake/contracts";
-import type { KnowledgeAnalysis } from "@/lib/knowledge/contracts";
+import {
+  knowledgeAnalysisSchema,
+  type KnowledgeAnalysis,
+} from "@/lib/knowledge/contracts";
 
 const DOCUMENT_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_DOCUMENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -177,6 +180,38 @@ describe("bounded intake run request", () => {
         itemId: "item-1",
         documentId: DOCUMENT_ID,
         preliminary: preliminaryAnalysis({ summary: "x".repeat(12_001) }),
+        pageContext: pageContext("workspace"),
+      }),
+    ).toThrow("INTAKE_PROMPT_TOO_LARGE");
+  });
+
+  it("rejects schema-valid structured preliminary JSON over 12,000 characters", () => {
+    const payload = Object.fromEntries(
+      Array.from({ length: 1_500 }, (_, index) => [
+        `field_${index.toString().padStart(4, "0")}`,
+        index % 2 === 0,
+      ]),
+    );
+    const preliminary = preliminaryAnalysis({
+      proposals: [
+        {
+          kind: "todo",
+          title: "x",
+          payload,
+          confidence: 0.5,
+          status: "pending",
+        },
+      ],
+    });
+
+    expect(knowledgeAnalysisSchema.safeParse(preliminary).success).toBe(true);
+    expect(JSON.stringify(preliminary).length).toBeGreaterThan(12_000);
+    expect(() =>
+      buildIntakeRunRequest({
+        ownerId: "owner-1",
+        itemId: "item-1",
+        documentId: DOCUMENT_ID,
+        preliminary,
         pageContext: pageContext("workspace"),
       }),
     ).toThrow("INTAKE_PROMPT_TOO_LARGE");

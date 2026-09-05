@@ -3,19 +3,21 @@ import { z } from "zod";
 const DEFAULT_TIMEOUT_MS = 20_000;
 
 const runStatusSchema = z.enum([
+  "started",
   "queued",
   "running",
+  "waiting_for_approval",
   "completed",
   "failed",
-  "stopped",
-  "pending_approval",
+  "stopping",
+  "cancelled",
 ]);
 
 const runResponseSchema = z.object({
   run_id: z.string().min(1).max(200),
   status: runStatusSchema,
-  output: z.string().optional(),
-  error: z.object({ code: z.string().optional() }).optional(),
+  output: z.string().max(1_000_000).optional(),
+  error: z.string().max(10_000).optional(),
 });
 
 const eventsResponseSchema = z.object({
@@ -91,7 +93,7 @@ export class HermesRunsClient {
       method: "POST",
       body: JSON.stringify({
         session_id: input.sessionId,
-        prompt: input.prompt,
+        input: input.prompt,
         metadata: {
           purpose: input.metadata.purpose,
           item_id: input.metadata.itemId,
@@ -108,21 +110,23 @@ export class HermesRunsClient {
   }
 
   async getEvents(runId: string): Promise<Response> {
-    const response = await this.request(
+    return this.request(
       `/internal/hermes/runs/${parseRunId(runId)}/events`,
       {
         method: "GET",
         accept: "text/event-stream",
       },
+      (response) => {
+        const parsed = eventsResponseSchema.safeParse({
+          status: response.status,
+          contentType: response.headers.get("content-type") ?? "",
+        });
+        if (!parsed.success) {
+          throw new HermesRunsClientError("INVALID_HERMES_EVENTS_RESPONSE");
+        }
+        return response;
+      },
     );
-    const parsed = eventsResponseSchema.safeParse({
-      status: response.status,
-      contentType: response.headers.get("content-type") ?? "",
-    });
-    if (!parsed.success) {
-      throw new HermesRunsClientError("INVALID_HERMES_EVENTS_RESPONSE");
-    }
-    return response;
   }
 
   async stopRun(runId: string): Promise<HermesRun> {
@@ -136,40 +140,41 @@ export class HermesRunsClient {
     path: string,
     init: { method: "GET" | "POST"; body?: string },
   ): Promise<HermesRun> {
-    const response = await this.request(path, {
-      ...init,
-      accept: "application/json",
-    });
-    let json: unknown;
-    try {
-      json = await response.json();
-    } catch {
-      throw new HermesRunsClientError("INVALID_HERMES_RUN_RESPONSE");
-    }
-    const parsed = runResponseSchema.safeParse(json);
-    if (!parsed.success) {
-      throw new HermesRunsClientError("INVALID_HERMES_RUN_RESPONSE");
-    }
-    return {
-      runId: parsed.data.run_id,
-      status: parsed.data.status,
-      ...(parsed.data.output === undefined
-        ? {}
-        : { output: parsed.data.output }),
-      ...(parsed.data.error?.code === undefined
-        ? {}
-        : { errorCode: parsed.data.error.code }),
-    };
+    return this.request(
+      path,
+      {
+        ...init,
+        accept: "application/json",
+      },
+      async (response) => {
+        const json: unknown = await response.json();
+        const parsed = runResponseSchema.safeParse(json);
+        if (!parsed.success) {
+          throw new HermesRunsClientError("INVALID_HERMES_RUN_RESPONSE");
+        }
+        return {
+          runId: parsed.data.run_id,
+          status: parsed.data.status,
+          ...(parsed.data.output === undefined
+            ? {}
+            : { output: parsed.data.output }),
+          ...(parsed.data.error === undefined
+            ? {}
+            : { errorCode: "HERMES_RUN_FAILED" }),
+        };
+      },
+    );
   }
 
-  private async request(
+  private async request<T>(
     path: string,
     init: {
       method: "GET" | "POST";
       accept: "application/json" | "text/event-stream";
       body?: string;
     },
-  ): Promise<Response> {
+    consume: (response: Response) => T | Promise<T>,
+  ): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -189,7 +194,7 @@ export class HermesRunsClient {
       if (!response.ok) {
         throw new HermesRunsClientError("HERMES_RUN_HTTP_ERROR");
       }
-      return response;
+      return await consume(response);
     } catch (error) {
       if (error instanceof HermesRunsClientError) throw error;
       if (
@@ -197,6 +202,9 @@ export class HermesRunsClient {
         (error instanceof Error && error.name === "AbortError")
       ) {
         throw new HermesRunsClientError("HERMES_RUN_TIMEOUT");
+      }
+      if (error instanceof SyntaxError) {
+        throw new HermesRunsClientError("INVALID_HERMES_RUN_RESPONSE");
       }
       throw new HermesRunsClientError("HERMES_RUN_NETWORK_ERROR");
     } finally {
