@@ -68,6 +68,16 @@ export async function processClaimedIntakeItem(
     await stopAttachedRun(dependencies.runs, runId);
     return;
   }
+  if (isExtractionFailed(knowledgeItem)) {
+    await failItem(
+      item,
+      workerId,
+      item.invalidPlanCount,
+      "PROCESSING_FAILED",
+      dependencies.repository,
+    );
+    return;
+  }
   if (!isExtractionReady(knowledgeItem)) {
     await dependencies.repository.releaseItem({
       ownerId: item.ownerId,
@@ -103,24 +113,33 @@ export async function processClaimedIntakeItem(
     return;
   }
 
-  const startedAt = dependencies.now().getTime();
   let invalidPlanCount = item.invalidPlanCount;
   let pollMs = 1_000;
   let run: HermesRun | undefined;
+  let runTiming = createRunTiming(dependencies.now());
 
   if (!runId) {
+    let createdRun: HermesRun;
     try {
-      run = await dependencies.runs.createRun(request);
-      runId = run.runId;
-      await dependencies.repository.attachHermesRun(
-        item.id,
-        workerId,
-        runId,
-      );
+      createdRun = await dependencies.runs.createRun(request);
     } catch {
       await releaseForHermesRetry(item, workerId, dependencies);
       return;
     }
+    runId = createdRun.runId;
+    runTiming = createRunTiming(dependencies.now(), createdRun);
+    if (
+      !(await attachCreatedRun(
+        item,
+        workerId,
+        createdRun,
+        dependencies,
+        signal,
+      ))
+    ) {
+      return;
+    }
+    run = createdRun;
   }
 
   while (runId) {
@@ -129,25 +148,25 @@ export async function processClaimedIntakeItem(
       return;
     }
 
-    if (!run || isActiveRun(run.status)) {
-      if (dependencies.now().getTime() - startedAt >= HERMES_RUN_TIMEOUT_MS) {
-        await stopAttachedRun(dependencies.runs, runId);
-        await failItem(
-          item,
-          workerId,
-          invalidPlanCount,
-          "HERMES_RUN_TIMEOUT",
-          dependencies.repository,
-        );
-        return;
-      }
+    if (isRunTimedOut(runTiming, dependencies.now())) {
+      await stopAttachedRun(dependencies.runs, runId);
+      await failItem(
+        item,
+        workerId,
+        invalidPlanCount,
+        "HERMES_RUN_TIMEOUT",
+        dependencies.repository,
+      );
+      return;
+    }
 
+    if (!run || isActiveRun(run.status)) {
       await dependencies.sleep(pollMs, signal);
       if (signal.aborted) {
         await stopAttachedRun(dependencies.runs, runId);
         return;
       }
-      if (dependencies.now().getTime() - startedAt >= HERMES_RUN_TIMEOUT_MS) {
+      if (isRunTimedOut(runTiming, dependencies.now())) {
         await stopAttachedRun(dependencies.runs, runId);
         await failItem(
           item,
@@ -176,7 +195,28 @@ export async function processClaimedIntakeItem(
       try {
         run = await dependencies.runs.getRun(runId);
       } catch {
-        await releaseForHermesRetry(item, workerId, dependencies);
+        await releaseForHermesRetry(
+          item,
+          workerId,
+          dependencies,
+          runId,
+        );
+        return;
+      }
+      if (signal.aborted) {
+        await stopAttachedRun(dependencies.runs, runId);
+        return;
+      }
+      runTiming = updateRunTiming(runTiming, run);
+      if (isRunTimedOut(runTiming, dependencies.now())) {
+        await stopAttachedRun(dependencies.runs, runId);
+        await failItem(
+          item,
+          workerId,
+          invalidPlanCount,
+          "HERMES_RUN_TIMEOUT",
+          dependencies.repository,
+        );
         return;
       }
       pollMs = Math.min(MAX_POLL_MS, pollMs * 2);
@@ -222,47 +262,81 @@ export async function processClaimedIntakeItem(
     try {
       plan = parseTerminalIntakePlan(run.output ?? "", item.documentId);
     } catch {
-      invalidPlanCount += 1;
-      if (invalidPlanCount >= 2) {
+      const nextInvalidPlanCount = invalidPlanCount + 1;
+      if (nextInvalidPlanCount >= 2) {
         await failItem(
           item,
           workerId,
-          invalidPlanCount,
+          nextInvalidPlanCount,
           "INVALID_HERMES_PLAN",
           dependencies.repository,
         );
         return;
       }
 
-      await dependencies.repository.setItemDecision({
-        ownerId: item.ownerId,
-        itemId: item.id,
-        workerId,
-        status: "orchestrating",
-        confidence: null,
-        decisionSummary: null,
-        invalidPlanCount,
-        errorCode: null,
-      });
+      let correctionRun: HermesRun;
       try {
-        run = await dependencies.runs.createRun({
+        correctionRun = await dependencies.runs.createRun({
           ...request,
           prompt: `${request.prompt}\n\n${CORRECTION_INSTRUCTION}`,
         });
-        runId = run.runId;
-        await dependencies.repository.attachHermesRun(
-          item.id,
-          workerId,
-          runId,
-        );
-        pollMs = 1_000;
-        continue;
       } catch {
         await releaseForHermesRetry(item, workerId, dependencies);
         return;
       }
+      if (
+        !(await attachCreatedRun(
+          item,
+          workerId,
+          correctionRun,
+          dependencies,
+          signal,
+        ))
+      ) {
+        return;
+      }
+      try {
+        await dependencies.repository.setItemDecision({
+          ownerId: item.ownerId,
+          itemId: item.id,
+          workerId,
+          status: "orchestrating",
+          confidence: null,
+          decisionSummary: null,
+          invalidPlanCount: nextInvalidPlanCount,
+          errorCode: null,
+        });
+      } catch (error) {
+        await stopAttachedRun(dependencies.runs, correctionRun.runId);
+        if (isLeaseLost(error)) return;
+        throw error;
+      }
+      if (signal.aborted) {
+        await stopAttachedRun(dependencies.runs, correctionRun.runId);
+        return;
+      }
+      invalidPlanCount = nextInvalidPlanCount;
+      run = correctionRun;
+      runId = correctionRun.runId;
+      runTiming = createRunTiming(dependencies.now(), correctionRun);
+      pollMs = 1_000;
+      continue;
     }
 
+    if (
+      !(await renewLeaseOrStop(
+        item,
+        workerId,
+        runId,
+        dependencies,
+      ))
+    ) {
+      return;
+    }
+    if (signal.aborted) {
+      await stopAttachedRun(dependencies.runs, runId);
+      return;
+    }
     await dependencies.executePlan({
       ownerId: item.ownerId,
       batchId: item.batchId,
@@ -290,11 +364,16 @@ export async function runIntakeWorker(options: {
       leaseSeconds,
     );
     if (item) {
-      await processClaimedIntakeItem(
-        item,
-        options.dependencies,
-        options.signal,
-      );
+      try {
+        await processClaimedIntakeItem(
+          item,
+          options.dependencies,
+          options.signal,
+        );
+      } catch {
+        if (options.signal.aborted) return;
+        await options.dependencies.sleep(idleMs, options.signal);
+      }
       continue;
     }
     if (options.signal.aborted) return;
@@ -312,6 +391,11 @@ function isExtractionReady(value: unknown): boolean {
     ["ready", "needs_attention"].includes(String(item.status)) &&
     item.stage === "complete"
   );
+}
+
+function isExtractionFailed(value: unknown): boolean {
+  const item = asRecord(value);
+  return item.status === "failed" || item.stage === "failed";
 }
 
 function toPreliminaryAnalysis(value: unknown): KnowledgeAnalysis {
@@ -336,18 +420,76 @@ async function releaseForHermesRetry(
   item: ClaimedIntakeItem,
   workerId: string,
   dependencies: IntakeOrchestratorDependencies,
+  runId: string | null = null,
 ): Promise<void> {
-  await dependencies.repository.releaseItem({
-    ownerId: item.ownerId,
-    itemId: item.id,
-    workerId,
-    status: "awaiting_hermes",
-    errorCode: "HERMES_UNAVAILABLE",
-    availableAt: addMilliseconds(
-      dependencies.now(),
-      hermesBackoffMs(item.attemptCount),
-    ),
-  });
+  try {
+    await dependencies.repository.releaseItem({
+      ownerId: item.ownerId,
+      itemId: item.id,
+      workerId,
+      status: "awaiting_hermes",
+      errorCode: "HERMES_UNAVAILABLE",
+      availableAt: addMilliseconds(
+        dependencies.now(),
+        hermesBackoffMs(item.attemptCount),
+      ),
+    });
+  } catch (error) {
+    if (isLeaseLost(error)) {
+      await stopAttachedRun(dependencies.runs, runId);
+      return;
+    }
+    throw error;
+  }
+}
+
+async function attachCreatedRun(
+  item: ClaimedIntakeItem,
+  workerId: string,
+  run: HermesRun,
+  dependencies: IntakeOrchestratorDependencies,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (signal.aborted) {
+    await stopAttachedRun(dependencies.runs, run.runId);
+    return false;
+  }
+  try {
+    await dependencies.repository.attachHermesRun(
+      item.id,
+      workerId,
+      run.runId,
+    );
+  } catch (error) {
+    await stopAttachedRun(dependencies.runs, run.runId);
+    if (isLeaseLost(error)) return false;
+    throw error;
+  }
+  if (signal.aborted) {
+    await stopAttachedRun(dependencies.runs, run.runId);
+    return false;
+  }
+  return true;
+}
+
+async function renewLeaseOrStop(
+  item: ClaimedIntakeItem,
+  workerId: string,
+  runId: string,
+  dependencies: IntakeOrchestratorDependencies,
+): Promise<boolean> {
+  try {
+    await dependencies.repository.renewLease(
+      item.id,
+      workerId,
+      DEFAULT_LEASE_SECONDS,
+    );
+    return true;
+  } catch (error) {
+    if (!isLeaseLost(error)) throw error;
+    await stopAttachedRun(dependencies.runs, runId);
+    return false;
+  }
 }
 
 async function failItem(
@@ -407,6 +549,33 @@ function stablePlanningError(error: unknown): string {
 
 function isLeaseLost(error: unknown): boolean {
   return error instanceof Error && error.message === "INTAKE_LEASE_LOST";
+}
+
+interface RunTiming {
+  fallbackCreatedAtMs: number;
+  createdAtMs?: number;
+}
+
+function createRunTiming(now: Date, run?: HermesRun): RunTiming {
+  return {
+    fallbackCreatedAtMs: now.getTime(),
+    ...(run?.createdAtMs === undefined
+      ? {}
+      : { createdAtMs: run.createdAtMs }),
+  };
+}
+
+function updateRunTiming(timing: RunTiming, run: HermesRun): RunTiming {
+  return run.createdAtMs === undefined
+    ? timing
+    : { ...timing, createdAtMs: run.createdAtMs };
+}
+
+function isRunTimedOut(timing: RunTiming, now: Date): boolean {
+  return (
+    now.getTime() - (timing.createdAtMs ?? timing.fallbackCreatedAtMs) >=
+    HERMES_RUN_TIMEOUT_MS
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

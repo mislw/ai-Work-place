@@ -110,6 +110,39 @@ describe("Hermes Runs client", () => {
     expect(body).not.toHaveProperty("ownerId");
   });
 
+  it("normalizes bounded Hermes created_at seconds to createdAtMs", async () => {
+    fetchMock.mockResolvedValue(
+      Response.json({
+        run_id: "run-1",
+        status: "running",
+        created_at: 1_757_059_200,
+      }),
+    );
+
+    await expect(createClient().getRun("run-1")).resolves.toEqual({
+      runId: "run-1",
+      status: "running",
+      createdAtMs: 1_757_059_200_000,
+    });
+  });
+
+  it.each([-1, 253_402_300_800])(
+    "rejects out-of-range Hermes created_at value %s",
+    async (createdAt) => {
+      fetchMock.mockResolvedValue(
+        Response.json({
+          run_id: "run-1",
+          status: "running",
+          created_at: createdAt,
+        }),
+      );
+
+      await expect(createClient().getRun("run-1")).rejects.toMatchObject({
+        code: "INVALID_HERMES_RUN_RESPONSE",
+      });
+    },
+  );
+
   it.each([
     "queued",
     "running",
@@ -139,6 +172,7 @@ describe("Hermes Runs client", () => {
     expect(result).toEqual({
       runId: "run-1",
       status,
+      createdAtMs: 1_757_059_200_000,
       ...(status === "completed" ? { output: '{"version":1}' } : {}),
       ...(status === "failed" ? { errorCode: "HERMES_RUN_FAILED" } : {}),
     });

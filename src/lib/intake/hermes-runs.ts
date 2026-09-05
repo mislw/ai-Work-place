@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
+const MAX_HERMES_CREATED_AT_SECONDS = 253_402_300_799;
 
 const runStatusSchema = z.enum([
   "started",
@@ -16,6 +17,12 @@ const runStatusSchema = z.enum([
 const runResponseSchema = z.object({
   run_id: z.string().min(1).max(200),
   status: runStatusSchema,
+  created_at: z
+    .number()
+    .finite()
+    .min(0)
+    .max(MAX_HERMES_CREATED_AT_SECONDS)
+    .optional(),
   output: z.string().max(1_000_000).optional(),
   error: z.string().max(10_000).optional(),
 });
@@ -32,6 +39,7 @@ export type HermesRunStatus = z.infer<typeof runStatusSchema>;
 export interface HermesRun {
   runId: string;
   status: HermesRunStatus;
+  createdAtMs?: number;
   output?: string;
   errorCode?: string;
 }
@@ -155,6 +163,9 @@ export class HermesRunsClient {
         return {
           runId: parsed.data.run_id,
           status: parsed.data.status,
+          ...(parsed.data.created_at === undefined
+            ? {}
+            : { createdAtMs: parsed.data.created_at * 1_000 }),
           ...(parsed.data.output === undefined
             ? {}
             : { output: parsed.data.output }),
