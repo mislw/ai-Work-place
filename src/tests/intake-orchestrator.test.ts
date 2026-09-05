@@ -92,6 +92,7 @@ function createHarness() {
     claimNextItem: vi.fn(),
     renewLease: vi.fn(),
     attachHermesRun: vi.fn(),
+    attachHermesCorrectionRun: vi.fn(),
     setItemDecision: vi.fn(),
     replacePendingSteps: vi.fn(),
     markStepCompleted: vi.fn(),
@@ -236,6 +237,8 @@ describe("processClaimedIntakeItem", () => {
       batchId: claimedItem.batchId,
       itemId: claimedItem.id,
       documentId: claimedItem.documentId,
+      workerId: "worker-1",
+      signal: expect.any(AbortSignal),
       plan: JSON.parse(VALID_PLAN),
     });
   });
@@ -297,24 +300,18 @@ describe("processClaimedIntakeItem", () => {
       `${firstRequest.prompt}\n\n${CORRECTION_INSTRUCTION}`,
     );
     expect(correctionRequest.prompt).not.toContain(rejectedOutput);
-    expect(harness.repository.setItemDecision).toHaveBeenCalledWith({
+    expect(
+      harness.repository.attachHermesCorrectionRun,
+    ).toHaveBeenCalledWith({
       ownerId: claimedItem.ownerId,
       itemId: claimedItem.id,
       workerId: "worker-1",
-      status: "orchestrating",
-      confidence: null,
-      decisionSummary: null,
+      runId: "run-2",
       invalidPlanCount: 1,
-      errorCode: null,
     });
+    expect(harness.repository.setItemDecision).not.toHaveBeenCalled();
     expect(JSON.stringify(harness.repository.setItemDecision.mock.calls)).not.toContain(
       rejectedOutput,
-    );
-    expect(harness.repository.attachHermesRun).toHaveBeenNthCalledWith(
-      2,
-      claimedItem.id,
-      "worker-1",
-      "run-2",
     );
     expect(harness.executePlan).toHaveBeenCalledTimes(1);
   });
@@ -346,6 +343,9 @@ describe("processClaimedIntakeItem", () => {
       harness.dependencies,
     );
 
+    expect(
+      harness.repository.attachHermesCorrectionRun,
+    ).not.toHaveBeenCalled();
     expect(harness.repository.setItemDecision).not.toHaveBeenCalled();
     expect(harness.repository.releaseItem).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -359,19 +359,18 @@ describe("processClaimedIntakeItem", () => {
       harness.dependencies,
     );
 
-    expect(harness.repository.attachHermesRun).toHaveBeenCalledWith(
-      claimedItem.id,
-      "worker-1",
-      "run-correction",
-    );
-    expect(harness.repository.setItemDecision).toHaveBeenCalledTimes(1);
-    expect(harness.repository.setItemDecision).toHaveBeenCalledWith(
+    expect(
+      harness.repository.attachHermesCorrectionRun,
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      harness.repository.attachHermesCorrectionRun,
+    ).toHaveBeenCalledWith(
       expect.objectContaining({
-        status: "orchestrating",
+        runId: "run-correction",
         invalidPlanCount: 1,
-        errorCode: null,
       }),
     );
+    expect(harness.repository.setItemDecision).not.toHaveBeenCalled();
     expect(harness.executePlan).toHaveBeenCalledTimes(1);
   });
 
@@ -423,7 +422,7 @@ describe("processClaimedIntakeItem", () => {
       runId: "run-correction-orphan",
       status: "started",
     });
-    harness.repository.attachHermesRun.mockRejectedValue(
+    harness.repository.attachHermesCorrectionRun.mockRejectedValue(
       new Error("DATABASE_WRITE_FAILED"),
     );
 
@@ -439,6 +438,33 @@ describe("processClaimedIntakeItem", () => {
     );
     expect(harness.repository.releaseItem).not.toHaveBeenCalled();
     expect(harness.repository.setItemDecision).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a sanitized cleanup failure when an unattached run cannot be stopped", async () => {
+    const harness = createHarness();
+    harness.runs.createRun.mockResolvedValue({
+      runId: "run-untracked",
+      status: "started",
+    });
+    harness.repository.attachHermesRun.mockRejectedValue(
+      new Error("DATABASE_WRITE_FAILED"),
+    );
+    harness.runs.stopRun.mockRejectedValue(
+      new Error("private provider stop failure"),
+    );
+
+    let thrown: unknown;
+    try {
+      await processClaimedIntakeItem(claimedItem, harness.dependencies);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      message: "HERMES_RUN_CLEANUP_FAILED",
+    });
+    expect(String((thrown as Error).message)).not.toContain("private");
+    expect(harness.repository.releaseItem).not.toHaveBeenCalled();
   });
 
   it("marks a second invalid terminal plan failed", async () => {
@@ -588,6 +614,30 @@ describe("processClaimedIntakeItem", () => {
     expect(harness.repository.releaseItem).not.toHaveBeenCalled();
   });
 
+  it("does not execute when abort arrives during the final lease check", async () => {
+    const harness = createHarness();
+    const controller = new AbortController();
+    harness.runs.getRun.mockResolvedValue({
+      runId: "run-completed",
+      status: "completed",
+      output: VALID_PLAN,
+    });
+    harness.repository.renewLease
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        controller.abort();
+      });
+
+    await processClaimedIntakeItem(
+      { ...claimedItem, hermesRunId: "run-completed" },
+      harness.dependencies,
+      controller.signal,
+    );
+
+    expect(harness.executePlan).not.toHaveBeenCalled();
+    expect(harness.runs.stopRun).toHaveBeenCalledWith("run-completed");
+  });
+
   it("recovers an attached completed run without creating another run", async () => {
     const harness = createHarness();
     harness.runs.getRun.mockResolvedValue({
@@ -670,6 +720,42 @@ describe("processClaimedIntakeItem", () => {
       expect.objectContaining({ errorCode: "HERMES_RUN_TIMEOUT" }),
     );
     expect(harness.executePlan).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts correction fallback timing when createRun resolves before persistence", async () => {
+    const harness = createHarness();
+    const baseMs = Date.parse(NOW);
+    let elapsedMs = 0;
+    harness.now.mockImplementation(() => new Date(baseMs + elapsedMs));
+    harness.runs.createRun
+      .mockResolvedValueOnce({
+        runId: "run-original",
+        status: "completed",
+        output: "invalid-original-output",
+      })
+      .mockResolvedValueOnce({
+        runId: "run-correction",
+        status: "started",
+      });
+    harness.repository.attachHermesCorrectionRun.mockImplementation(
+      async () => {
+        elapsedMs += 21 * 60 * 1_000;
+      },
+    );
+    harness.runs.getRun.mockResolvedValue({
+      runId: "run-correction",
+      status: "completed",
+      createdAtMs: baseMs,
+      output: VALID_PLAN,
+    });
+
+    await processClaimedIntakeItem(claimedItem, harness.dependencies);
+
+    expect(harness.runs.getRun).not.toHaveBeenCalled();
+    expect(harness.repository.setItemDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ errorCode: "HERMES_RUN_TIMEOUT" }),
+    );
+    expect(harness.executePlan).not.toHaveBeenCalled();
   });
 
   it("stops and fails an active run after twenty minutes", async () => {
@@ -804,5 +890,52 @@ describe("runIntakeWorker", () => {
     expect(harness.repository.claimNextItem).toHaveBeenCalledTimes(3);
     expect(harness.executePlan).toHaveBeenCalledTimes(2);
     expect(harness.sleep).toHaveBeenCalledWith(25, controller.signal);
+  });
+
+  it("exits cleanly when item-error backoff sleep rejects because of abort", async () => {
+    const harness = createHarness();
+    const controller = new AbortController();
+    harness.getKnowledgeItem.mockRejectedValue(new Error("QUERY_FAILED"));
+    harness.repository.claimNextItem.mockImplementation(
+      async (workerId: string) => ({
+        ...claimedItem,
+        leaseOwner: workerId,
+      }),
+    );
+    harness.sleep.mockImplementation(async (_milliseconds, signal) => {
+      controller.abort();
+      throw signal.reason;
+    });
+
+    await expect(
+      runIntakeWorker({
+        dependencies: harness.dependencies,
+        signal: controller.signal,
+        pollMs: 25,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(harness.repository.claimNextItem).toHaveBeenCalledTimes(1);
+  });
+
+  it("still propagates unrelated item-error backoff sleep failures", async () => {
+    const harness = createHarness();
+    const controller = new AbortController();
+    harness.getKnowledgeItem.mockRejectedValue(new Error("QUERY_FAILED"));
+    harness.repository.claimNextItem.mockImplementation(
+      async (workerId: string) => ({
+        ...claimedItem,
+        leaseOwner: workerId,
+      }),
+    );
+    harness.sleep.mockRejectedValue(new Error("TIMER_FAILED"));
+
+    await expect(
+      runIntakeWorker({
+        dependencies: harness.dependencies,
+        signal: controller.signal,
+        pollMs: 25,
+      }),
+    ).rejects.toThrow("TIMER_FAILED");
   });
 });

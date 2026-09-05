@@ -956,6 +956,36 @@ as $$
    and b.user_id = c.user_id;
 $$;
 
+create or replace function public.attach_workspace_intake_correction_run(
+  p_user_id uuid,
+  p_item_id uuid,
+  p_worker_id text,
+  p_run_id text,
+  p_invalid_plan_count integer
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.workspace_intake_items
+  set hermes_run_id = p_run_id,
+      invalid_plan_count = p_invalid_plan_count,
+      status = 'orchestrating',
+      error_code = null
+  where id = p_item_id
+    and user_id = p_user_id
+    and lease_owner = p_worker_id
+    and status in ('orchestrating', 'executing');
+
+  if not found then
+    raise exception 'INTAKE_LEASE_LOST';
+  end if;
+  return true;
+end;
+$$;
+
 create or replace function public.retry_workspace_intake_batch(
   p_user_id uuid,
   p_batch_id uuid
@@ -1331,6 +1361,7 @@ revoke all on function public.register_workspace_intake_batch(uuid, text, text, 
 revoke all on function public.claim_ingestion_job(text, integer) from public, anon, authenticated;
 revoke all on function public.claim_workspace_intake_item(text, integer)
   from public, anon, authenticated;
+revoke all on function public.attach_workspace_intake_correction_run(uuid, uuid, text, text, integer) from public, anon, authenticated;
 revoke all on function public.retry_workspace_intake_batch(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.cancel_workspace_intake_batch(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb) from public, anon, authenticated;
@@ -1341,6 +1372,7 @@ revoke all on function public.fail_ingestion_job(uuid, text) from public, anon, 
 grant execute on function public.claim_ingestion_job(text, integer) to service_role;
 grant execute on function public.claim_workspace_intake_item(text, integer)
   to service_role;
+grant execute on function public.attach_workspace_intake_correction_run(uuid, uuid, text, text, integer) to service_role;
 grant execute on function public.retry_workspace_intake_batch(uuid, uuid) to service_role;
 grant execute on function public.cancel_workspace_intake_batch(uuid, uuid) to service_role;
 grant execute on function public.replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb) to service_role;

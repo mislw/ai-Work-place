@@ -40,6 +40,8 @@ export interface IntakeOrchestratorDependencies {
     batchId: string;
     itemId: string;
     documentId: string;
+    workerId: string;
+    signal: AbortSignal;
     plan: WorkspaceIntakePlanV1;
   }): Promise<void>;
   now(): Date;
@@ -161,8 +163,7 @@ export async function processClaimedIntakeItem(
     }
 
     if (!run || isActiveRun(run.status)) {
-      await dependencies.sleep(pollMs, signal);
-      if (signal.aborted) {
+      if (!(await sleepOrAbort(dependencies.sleep, pollMs, signal))) {
         await stopAttachedRun(dependencies.runs, runId);
         return;
       }
@@ -284,6 +285,10 @@ export async function processClaimedIntakeItem(
         await releaseForHermesRetry(item, workerId, dependencies);
         return;
       }
+      const correctionTiming = createRunTiming(
+        dependencies.now(),
+        correctionRun,
+      );
       if (
         !(await attachCreatedRun(
           item,
@@ -291,25 +296,17 @@ export async function processClaimedIntakeItem(
           correctionRun,
           dependencies,
           signal,
+          () =>
+            dependencies.repository.attachHermesCorrectionRun({
+              ownerId: item.ownerId,
+              itemId: item.id,
+              workerId,
+              runId: correctionRun.runId,
+              invalidPlanCount: nextInvalidPlanCount,
+            }),
         ))
       ) {
         return;
-      }
-      try {
-        await dependencies.repository.setItemDecision({
-          ownerId: item.ownerId,
-          itemId: item.id,
-          workerId,
-          status: "orchestrating",
-          confidence: null,
-          decisionSummary: null,
-          invalidPlanCount: nextInvalidPlanCount,
-          errorCode: null,
-        });
-      } catch (error) {
-        await stopAttachedRun(dependencies.runs, correctionRun.runId);
-        if (isLeaseLost(error)) return;
-        throw error;
       }
       if (signal.aborted) {
         await stopAttachedRun(dependencies.runs, correctionRun.runId);
@@ -318,7 +315,7 @@ export async function processClaimedIntakeItem(
       invalidPlanCount = nextInvalidPlanCount;
       run = correctionRun;
       runId = correctionRun.runId;
-      runTiming = createRunTiming(dependencies.now(), correctionRun);
+      runTiming = correctionTiming;
       pollMs = 1_000;
       continue;
     }
@@ -342,6 +339,8 @@ export async function processClaimedIntakeItem(
       batchId: item.batchId,
       itemId: item.id,
       documentId: item.documentId,
+      workerId,
+      signal,
       plan,
     });
     return;
@@ -372,12 +371,28 @@ export async function runIntakeWorker(options: {
         );
       } catch {
         if (options.signal.aborted) return;
-        await options.dependencies.sleep(idleMs, options.signal);
+        if (
+          !(await sleepOrAbort(
+            options.dependencies.sleep,
+            idleMs,
+            options.signal,
+          ))
+        ) {
+          return;
+        }
       }
       continue;
     }
     if (options.signal.aborted) return;
-    await options.dependencies.sleep(idleMs, options.signal);
+    if (
+      !(await sleepOrAbort(
+        options.dependencies.sleep,
+        idleMs,
+        options.signal,
+      ))
+    ) {
+      return;
+    }
   }
 }
 
@@ -449,19 +464,21 @@ async function attachCreatedRun(
   run: HermesRun,
   dependencies: IntakeOrchestratorDependencies,
   signal: AbortSignal,
+  attach: () => Promise<void> = () =>
+    dependencies.repository.attachHermesRun(
+      item.id,
+      workerId,
+      run.runId,
+    ),
 ): Promise<boolean> {
   if (signal.aborted) {
     await stopAttachedRun(dependencies.runs, run.runId);
     return false;
   }
   try {
-    await dependencies.repository.attachHermesRun(
-      item.id,
-      workerId,
-      run.runId,
-    );
+    await attach();
   } catch (error) {
-    await stopAttachedRun(dependencies.runs, run.runId);
+    await stopUnattachedRun(dependencies.runs, run.runId);
     if (isLeaseLost(error)) return false;
     throw error;
   }
@@ -470,6 +487,17 @@ async function attachCreatedRun(
     return false;
   }
   return true;
+}
+
+async function stopUnattachedRun(
+  runs: HermesRunsClient,
+  runId: string,
+): Promise<void> {
+  try {
+    await runs.stopRun(runId);
+  } catch {
+    throw new Error("HERMES_RUN_CLEANUP_FAILED");
+  }
 }
 
 async function renewLeaseOrStop(
@@ -576,6 +604,20 @@ function isRunTimedOut(timing: RunTiming, now: Date): boolean {
     now.getTime() - (timing.createdAtMs ?? timing.fallbackCreatedAtMs) >=
     HERMES_RUN_TIMEOUT_MS
   );
+}
+
+async function sleepOrAbort(
+  sleep: IntakeOrchestratorDependencies["sleep"],
+  milliseconds: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  try {
+    await sleep(milliseconds, signal);
+    return !signal.aborted;
+  } catch (error) {
+    if (signal.aborted) return false;
+    throw error;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

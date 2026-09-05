@@ -11,6 +11,7 @@ vi.mock("@/lib/supabase/server", () => ({ createServiceClient }));
 
 import {
   getIntakeRepository,
+  type AttachHermesCorrectionRunInput,
   type CompletedStepInput,
   type FailedStepInput,
   type ReleaseIntakeItemInput,
@@ -219,6 +220,45 @@ describe("owner-scoped intake repository", () => {
         },
       ]),
     });
+  });
+
+  it("atomically attaches a correction run and invalid count through one owner-scoped RPC", async () => {
+    queryResults.push({ data: true, error: null });
+    const input: AttachHermesCorrectionRunInput = {
+      ownerId: "owner-1",
+      itemId: "item-1",
+      workerId: "worker-1",
+      runId: "run-correction",
+      invalidPlanCount: 1,
+    };
+
+    await getIntakeRepository().attachHermesCorrectionRun(input);
+
+    expect(rpc).toHaveBeenCalledWith(
+      "attach_workspace_intake_correction_run",
+      {
+        p_user_id: "owner-1",
+        p_item_id: "item-1",
+        p_worker_id: "worker-1",
+        p_run_id: "run-correction",
+        p_invalid_plan_count: 1,
+      },
+    );
+    expect(queryRecords).toEqual([]);
+  });
+
+  it("fails closed when the atomic correction attachment updates no item", async () => {
+    queryResults.push({ data: false, error: null });
+
+    await expect(
+      getIntakeRepository().attachHermesCorrectionRun({
+        ownerId: "owner-1",
+        itemId: "item-1",
+        workerId: "worker-1",
+        runId: "run-correction",
+        invalidPlanCount: 1,
+      }),
+    ).rejects.toThrow("INTAKE_LEASE_LOST");
   });
 
   it("owner-scopes the item decision mutation itself", async () => {

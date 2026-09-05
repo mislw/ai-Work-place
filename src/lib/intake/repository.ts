@@ -118,6 +118,14 @@ export interface SetItemDecisionInput {
   errorCode?: string | null;
 }
 
+export interface AttachHermesCorrectionRunInput {
+  ownerId: string;
+  itemId: string;
+  workerId: string;
+  runId: string;
+  invalidPlanCount: number;
+}
+
 export interface PendingStepInput {
   id?: string;
   sequence: number;
@@ -188,6 +196,9 @@ export interface IntakeRepository {
     itemId: string,
     workerId: string,
     runId: string,
+  ): Promise<void>;
+  attachHermesCorrectionRun(
+    input: AttachHermesCorrectionRunInput,
   ): Promise<void>;
   setItemDecision(input: SetItemDecisionInput): Promise<void>;
   replacePendingSteps(input: ReplacePendingStepsInput): Promise<void>;
@@ -316,6 +327,21 @@ export function getIntakeRepository(): IntakeRepository {
         .in("status", ["awaiting_hermes", "orchestrating"])
         .select("id")
         .maybeSingle();
+      throwIfError(error);
+      if (!data) throw new Error("INTAKE_LEASE_LOST");
+    },
+
+    async attachHermesCorrectionRun(input) {
+      const { data, error } = await client.rpc(
+        "attach_workspace_intake_correction_run",
+        {
+          p_user_id: input.ownerId,
+          p_item_id: input.itemId,
+          p_worker_id: input.workerId,
+          p_run_id: input.runId,
+          p_invalid_plan_count: input.invalidPlanCount,
+        },
+      );
       throwIfError(error);
       if (!data) throw new Error("INTAKE_LEASE_LOST");
     },

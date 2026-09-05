@@ -14,7 +14,7 @@ const runStatusSchema = z.enum([
   "cancelled",
 ]);
 
-const runResponseSchema = z.object({
+const runMutationResponseSchema = z.object({
   run_id: z.string().min(1).max(200),
   status: runStatusSchema,
   created_at: z
@@ -25,6 +25,14 @@ const runResponseSchema = z.object({
     .optional(),
   output: z.string().max(1_000_000).optional(),
   error: z.string().max(10_000).optional(),
+});
+
+const runSnapshotResponseSchema = runMutationResponseSchema.extend({
+  created_at: z
+    .number()
+    .finite()
+    .min(0)
+    .max(MAX_HERMES_CREATED_AT_SECONDS),
 });
 
 const eventsResponseSchema = z.object({
@@ -42,6 +50,10 @@ export interface HermesRun {
   createdAtMs?: number;
   output?: string;
   errorCode?: string;
+}
+
+export interface HermesRunSnapshot extends HermesRun {
+  createdAtMs: number;
 }
 
 export interface CreateHermesRunInput {
@@ -111,10 +123,12 @@ export class HermesRunsClient {
     });
   }
 
-  async getRun(runId: string): Promise<HermesRun> {
-    return this.requestRun(`/internal/hermes/runs/${parseRunId(runId)}`, {
-      method: "GET",
-    });
+  async getRun(runId: string): Promise<HermesRunSnapshot> {
+    return this.requestRun(
+      `/internal/hermes/runs/${parseRunId(runId)}`,
+      { method: "GET" },
+      true,
+    );
   }
 
   async getEvents(runId: string): Promise<Response> {
@@ -147,6 +161,17 @@ export class HermesRunsClient {
   private async requestRun(
     path: string,
     init: { method: "GET" | "POST"; body?: string },
+    requireCreatedAt: true,
+  ): Promise<HermesRunSnapshot>;
+  private async requestRun(
+    path: string,
+    init: { method: "GET" | "POST"; body?: string },
+    requireCreatedAt?: false,
+  ): Promise<HermesRun>;
+  private async requestRun(
+    path: string,
+    init: { method: "GET" | "POST"; body?: string },
+    requireCreatedAt = false,
   ): Promise<HermesRun> {
     return this.request(
       path,
@@ -156,7 +181,11 @@ export class HermesRunsClient {
       },
       async (response) => {
         const json: unknown = await response.json();
-        const parsed = runResponseSchema.safeParse(json);
+        const parsed = (
+          requireCreatedAt
+            ? runSnapshotResponseSchema
+            : runMutationResponseSchema
+        ).safeParse(json);
         if (!parsed.success) {
           throw new HermesRunsClientError("INVALID_HERMES_RUN_RESPONSE");
         }

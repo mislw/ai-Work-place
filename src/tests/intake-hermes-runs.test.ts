@@ -126,6 +126,19 @@ describe("Hermes Runs client", () => {
     });
   });
 
+  it("requires created_at on getRun poll snapshots", async () => {
+    fetchMock.mockResolvedValue(
+      Response.json({
+        run_id: "run-1",
+        status: "running",
+      }),
+    );
+
+    await expect(createClient().getRun("run-1")).rejects.toMatchObject({
+      code: "INVALID_HERMES_RUN_RESPONSE",
+    });
+  });
+
   it.each([-1, 253_402_300_800])(
     "rejects out-of-range Hermes created_at value %s",
     async (createdAt) => {

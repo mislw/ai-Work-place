@@ -293,8 +293,28 @@ describe("workspace intake database foundation", () => {
     );
   });
 
+  it("atomically attaches correction run id and invalid count under owner and lease", () => {
+    const correctionFunction = extractSqlDefinition(
+      sql,
+      "create or replace function public.attach_workspace_intake_correction_run",
+      "$$;",
+    );
+
+    expect(correctionFunction).toMatch(
+      /update public\.workspace_intake_items[\s\S]*?hermes_run_id = p_run_id[\s\S]*?invalid_plan_count = p_invalid_plan_count/,
+    );
+    expect(correctionFunction).toMatch(
+      /where id = p_item_id[\s\S]*?user_id = p_user_id[\s\S]*?lease_owner = p_worker_id[\s\S]*?status in \('orchestrating', 'executing'\)/,
+    );
+    expect(correctionFunction).toContain(
+      "raise exception 'INTAKE_LEASE_LOST'",
+    );
+    expect(correctionFunction).not.toMatch(/exception\s+when/i);
+  });
+
   it("restricts all intake mutation RPCs to service role", () => {
     for (const signature of [
+      "attach_workspace_intake_correction_run(uuid, uuid, text, text, integer)",
       "retry_workspace_intake_batch(uuid, uuid)",
       "cancel_workspace_intake_batch(uuid, uuid)",
       "replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb)",
