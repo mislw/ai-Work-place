@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import http, { type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
+import { gzipSync } from "node:zlib";
 import { getGatewayConfig, type GatewayConfig } from "../src/config.js";
 import { createGatewayServer } from "../src/server.js";
 import { signSessionToken } from "../src/tokens.js";
@@ -10,17 +11,16 @@ const embedSecret = "embed-secret-0123456789abcdef0123";
 const agentServiceSecret = "service-secret-0123456789abcdef01";
 const upstreamToken = "upstream-token-0123456789abcdef012";
 const toolSecret = "tool-secret-0123456789abcdef01234";
-const signingSecret = new TextEncoder().encode(embedSecret);
 
 function validEnvironment(
   overrides: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
   return {
-    AGENT_EMBED_SECRET: embedSecret,
-    AGENT_OWNER_USER_ID: "owner-1",
     AGENT_SERVICE_SECRET: agentServiceSecret,
-    AGENT_UPSTREAM: "http://127.0.0.1:3080",
     AGENT_UPSTREAM_SESSION_TOKEN: upstreamToken,
+    HARNESS_EMBED_SECRET: embedSecret,
+    HARNESS_OWNER_USER_ID: "owner-1",
+    HARNESS_UPSTREAM: "http://127.0.0.1:3080",
     ...overrides,
   };
 }
@@ -57,6 +57,16 @@ function request(
 }> {
   const target = new URL(origin);
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = <T>(
+      callback: (value: T) => void,
+      value: T,
+    ): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
     const clientRequest = http.request(
       {
         agent: false,
@@ -73,18 +83,52 @@ function request(
       (response) => {
         const chunks: Buffer[] = [];
         response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.once("aborted", () => {
+          finish(reject, new Error("Gateway response aborted"));
+        });
+        response.once("error", (error) => finish(reject, error));
         response.on("end", () => {
-          resolve({
-            body: Buffer.concat(chunks).toString("utf8"),
-            headers: response.headers,
-            statusCode: response.statusCode ?? 0,
-          });
+          finish(
+            resolve,
+            {
+              body: Buffer.concat(chunks).toString("utf8"),
+              headers: response.headers,
+              statusCode: response.statusCode ?? 0,
+            },
+          );
         });
       },
     );
-    clientRequest.once("error", reject);
+    const timer = setTimeout(() => {
+      clientRequest.destroy(new Error("Gateway request timed out"));
+    }, 2_000);
+    timer.unref();
+    clientRequest.once("error", (error) => finish(reject, error));
     if (options.body !== undefined) clientRequest.write(options.body);
     clientRequest.end();
+  });
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  milliseconds: number,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Timed out after ${milliseconds}ms`)),
+      milliseconds,
+    );
+    timer.unref();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
   });
 }
 
@@ -99,13 +143,30 @@ describe("agent service secret configuration", () => {
     );
   });
 
-  it("requires the dedicated secret to be configured", () => {
+  it("allows startup without internal Runs credentials", () => {
     const environment = validEnvironment();
     delete environment.AGENT_SERVICE_SECRET;
+    delete environment.AGENT_UPSTREAM_SESSION_TOKEN;
 
+    const config = getGatewayConfig(environment);
+
+    assert.equal(config.agentServiceSecret, undefined);
+    assert.equal(config.internalRunsUpstreamToken, undefined);
+  });
+
+  it("returns the dedicated internal Runs upstream token", () => {
+    const config = getGatewayConfig(validEnvironment());
+
+    assert.equal(config.internalRunsUpstreamToken, upstreamToken);
+  });
+
+  it("validates a configured internal Runs upstream token", () => {
     assert.throws(
-      () => getGatewayConfig(environment),
-      /AGENT_SERVICE_SECRET must be at least 32 bytes/,
+      () =>
+        getGatewayConfig(
+          validEnvironment({ AGENT_UPSTREAM_SESSION_TOKEN: "short" }),
+        ),
+      /AGENT_UPSTREAM_SESSION_TOKEN must be at least 32 bytes/,
     );
   });
 
@@ -113,7 +174,7 @@ describe("agent service secret configuration", () => {
     [
       "embed secret",
       {
-        AGENT_EMBED_SECRET: agentServiceSecret,
+        HARNESS_EMBED_SECRET: agentServiceSecret,
       },
     ],
     [
@@ -146,14 +207,36 @@ describe("internal Runs proxy", () => {
   let upstream: Server;
   let upstreamOrigin: string;
   let config: GatewayConfig;
+  let lastUpstreamAcceptEncoding: string | undefined;
+  let resolveHangingUpstreamClosed: (() => void) | undefined;
 
   before(async () => {
     upstream = http.createServer((upstreamRequest, upstreamResponse) => {
       const chunks: Buffer[] = [];
       upstreamRequest.on("data", (chunk: Buffer) => chunks.push(chunk));
       upstreamRequest.on("end", () => {
+        lastUpstreamAcceptEncoding =
+          upstreamRequest.headers["accept-encoding"];
         upstreamResponse.setHeader("Set-Cookie", "upstream=secret; Path=/");
         upstreamResponse.setHeader("Set-Cookie2", "legacy=secret; Path=/");
+        if (upstreamRequest.url === "/v1/runs/run-gzip") {
+          const body = Buffer.from("decompressed Hermes status payload");
+          const compressed = gzipSync(body);
+          upstreamResponse.setHeader("Content-Encoding", "gzip");
+          upstreamResponse.setHeader("Content-Length", compressed.length);
+          upstreamResponse.setHeader("Content-Type", "text/plain");
+          upstreamResponse.end(compressed);
+          return;
+        }
+        if (upstreamRequest.url === "/v1/runs/run-hang/events") {
+          upstreamResponse.setHeader("Content-Type", "text/event-stream");
+          upstreamResponse.once("close", () => {
+            resolveHangingUpstreamClosed?.();
+          });
+          upstreamResponse.flushHeaders();
+          upstreamResponse.write("data: first\n\n");
+          return;
+        }
         if (upstreamRequest.url?.endsWith("/events")) {
           upstreamResponse.setHeader("Content-Type", "text/event-stream");
           upstreamResponse.end("data: ready\n\n");
@@ -173,17 +256,9 @@ describe("internal Runs proxy", () => {
     const upstreamPort = await listen(upstream);
     upstreamOrigin = `http://127.0.0.1:${upstreamPort}`;
 
-    config = {
-      agentServiceSecret,
-      appOrigin: "https://ai.mislw.cn",
-      harnessUpstream: upstreamOrigin,
-      host: "127.0.0.1",
-      ownerUserId: "owner-1",
-      port: 0,
-      publicOrigin: "https://agent.mislw.cn",
-      secret: signingSecret,
-      upstreamSessionToken: upstreamToken,
-    };
+    config = getGatewayConfig(
+      validEnvironment({ HARNESS_UPSTREAM: upstreamOrigin }),
+    );
     gateway = createGatewayServer(config);
     const gatewayPort = await listen(gateway);
     gatewayOrigin = `http://127.0.0.1:${gatewayPort}`;
@@ -202,6 +277,33 @@ describe("internal Runs proxy", () => {
     });
 
     assert.equal(response.statusCode, 401);
+  });
+
+  it("starts without internal credentials and returns 503 only for internal routes", async () => {
+    const environment = validEnvironment({ HARNESS_UPSTREAM: upstreamOrigin });
+    delete environment.AGENT_SERVICE_SECRET;
+    delete environment.AGENT_UPSTREAM_SESSION_TOKEN;
+    const noInternalConfig = getGatewayConfig(environment);
+    const noInternalGateway = createGatewayServer(noInternalConfig);
+    const noInternalPort = await listen(noInternalGateway);
+    const noInternalOrigin = `http://127.0.0.1:${noInternalPort}`;
+
+    try {
+      assert.equal(
+        (await request(noInternalOrigin, "/health")).statusCode,
+        200,
+      );
+      assert.equal(
+        (
+          await request(noInternalOrigin, "/internal/hermes/runs", {
+            method: "POST",
+          })
+        ).statusCode,
+        503,
+      );
+    } finally {
+      await closeServer(noInternalGateway);
+    }
   });
 
   it("forwards an allowlisted request with only the upstream credential", async () => {
@@ -283,6 +385,57 @@ describe("internal Runs proxy", () => {
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"] ?? "", /^text\/event-stream/i);
     assert.equal(response.body, "data: ready\n\n");
+  });
+
+  it("requests identity encoding and removes stale compression framing", async () => {
+    const response = await request(
+      gatewayOrigin,
+      "/internal/hermes/runs/run-gzip",
+      {
+        headers: {
+          Authorization: `Bearer ${agentServiceSecret}`,
+          "Accept-Encoding": "gzip",
+        },
+      },
+    );
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(lastUpstreamAcceptEncoding, "identity");
+    assert.equal(response.headers["content-encoding"], undefined);
+    assert.equal(response.headers["content-length"], undefined);
+    assert.equal(response.body, "decompressed Hermes status payload");
+  });
+
+  it("aborts the upstream SSE stream when the downstream client disconnects", async () => {
+    const upstreamClosed = new Promise<void>((resolve) => {
+      resolveHangingUpstreamClosed = resolve;
+    });
+    const target = new URL(gatewayOrigin);
+
+    await new Promise<void>((resolve, reject) => {
+      const clientRequest = http.request(
+        {
+          headers: {
+            Authorization: `Bearer ${agentServiceSecret}`,
+            Connection: "close",
+          },
+          hostname: target.hostname,
+          path: "/internal/hermes/runs/run-hang/events",
+          port: target.port,
+        },
+        (response) => {
+          response.once("data", () => {
+            response.destroy();
+            resolve();
+          });
+        },
+      );
+      clientRequest.once("error", reject);
+      clientRequest.end();
+    });
+
+    await withTimeout(upstreamClosed, 500);
+    resolveHangingUpstreamClosed = undefined;
   });
 
   it("rejects oversized request bodies before proxying", async () => {

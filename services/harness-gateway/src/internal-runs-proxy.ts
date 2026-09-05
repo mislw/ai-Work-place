@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 
 const MAX_REQUEST_BODY_BYTES = 1_000_000;
@@ -8,6 +9,7 @@ const INTERNAL_HERMES_ROOT = "/internal/hermes";
 const INTERNAL_RUNS_ROOT = "/internal/hermes/runs";
 const STRIPPED_REQUEST_HEADERS = new Set([
   "authorization",
+  "accept-encoding",
   "connection",
   "content-length",
   "cookie",
@@ -25,6 +27,8 @@ const STRIPPED_REQUEST_HEADERS = new Set([
 ]);
 const STRIPPED_RESPONSE_HEADERS = new Set([
   "connection",
+  "content-encoding",
+  "content-length",
   "keep-alive",
   "proxy-authenticate",
   "set-cookie",
@@ -38,9 +42,9 @@ const STRIPPED_RESPONSE_HEADERS = new Set([
 class RequestBodyTooLargeError extends Error {}
 
 export interface InternalRunsProxyConfig {
-  agentServiceSecret: string;
+  agentServiceSecret?: string;
   harnessUpstream: string;
-  upstreamSessionToken?: string;
+  internalRunsUpstreamToken?: string;
 }
 
 export function mapInternalRunsPath(
@@ -88,24 +92,33 @@ export async function handleInternalRunsRequest(
     sendText(response, 404, "Not Found");
     return true;
   }
+  if (!config.agentServiceSecret || !config.internalRunsUpstreamToken) {
+    sendText(response, 503, "Internal Runs proxy is not configured");
+    return true;
+  }
   if (!authorized(request, config.agentServiceSecret)) {
     sendText(response, 401, "Unauthorized");
     return true;
   }
-  if (!config.upstreamSessionToken) {
-    sendText(response, 503, "Upstream session token is not configured");
-    return true;
-  }
 
+  const abortController = new AbortController();
+  const abortOnClose = () => {
+    if (!response.writableEnded) abortController.abort();
+  };
+  response.once("close", abortOnClose);
   try {
     const body = await readRequestBody(request);
     const upstreamResponse = await fetch(
       new URL(upstreamPath, config.harnessUpstream),
       {
         body: body.length > 0 ? new Uint8Array(body) : undefined,
-        headers: createUpstreamHeaders(request, config.upstreamSessionToken),
+        headers: createUpstreamHeaders(
+          request,
+          config.internalRunsUpstreamToken,
+        ),
         method: request.method,
         redirect: "manual",
+        signal: abortController.signal,
       },
     );
     response.statusCode = upstreamResponse.status;
@@ -114,15 +127,25 @@ export async function handleInternalRunsRequest(
       response.end();
       return true;
     }
-    Readable.fromWeb(
-      upstreamResponse.body as unknown as NodeReadableStream,
-    ).pipe(response);
+    await pipeline(
+      Readable.fromWeb(
+        upstreamResponse.body as unknown as NodeReadableStream,
+      ),
+      response,
+      { signal: abortController.signal },
+    );
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {
       sendText(response, 413, "Payload Too Large");
-    } else {
+    } else if (abortController.signal.aborted || response.destroyed) {
+      if (!response.destroyed) response.destroy();
+    } else if (!response.headersSent) {
       sendText(response, 502, "Bad Gateway");
+    } else {
+      response.destroy();
     }
+  } finally {
+    response.off("close", abortOnClose);
   }
   return true;
 }
@@ -179,6 +202,7 @@ function createUpstreamHeaders(
       headers.set(name, value);
     }
   }
+  headers.set("Accept-Encoding", "identity");
   headers.set("X-Hermes-Session-Token", upstreamSessionToken);
   return headers;
 }
