@@ -8,6 +8,7 @@ import type {
   IntakeItemStatus,
   WorkspacePageContextV1,
 } from "@/lib/intake/contracts";
+import { getKnowledgeItem } from "@/lib/knowledge/search";
 
 const ACTIVE_BATCH_STATUSES: IntakeBatchStatus[] = [
   "uploading",
@@ -102,6 +103,14 @@ const BATCH_SELECT = `
 
 type JsonObject = Record<string, unknown>;
 
+const reversibleTables = {
+  notes: "note",
+  todos: "todo",
+  calendar_events: "calendar_event",
+} as const;
+
+export type ReversibleRecordTable = keyof typeof reversibleTables;
+
 export interface ClaimedIntakeItem extends Omit<IntakeItem, "steps"> {
   ownerId: string;
   pageContext: WorkspacePageContextV1;
@@ -173,6 +182,36 @@ export interface ReleaseIntakeItemInput {
   availableAt: string;
 }
 
+export interface OwnerScopedRecordInput {
+  ownerId: string;
+  id: string;
+}
+
+export interface ReversibleRecordInput extends OwnerScopedRecordInput {
+  table: ReversibleRecordTable;
+}
+
+export interface RestoreKnowledgeDocumentInput
+  extends OwnerScopedRecordInput {
+  collectionId: string | null;
+}
+
+export interface UndoStepInput {
+  ownerId: string;
+  batchId: string;
+  itemId: string;
+  stepId: string;
+}
+
+export interface UndoConflictStepInput extends UndoStepInput {
+  errorCode: "UNDO_RECORD_CHANGED";
+}
+
+export interface ClearExpiredUndoDataInput {
+  ownerId: string;
+  batchId: string;
+}
+
 export interface IntakeRepository {
   registerBatch(
     ownerId: string,
@@ -208,7 +247,28 @@ export interface IntakeRepository {
   retryFailed(ownerId: string, batchId: string): Promise<IntakeBatch>;
   cancel(ownerId: string, batchId: string): Promise<IntakeBatch>;
   beginUndo(ownerId: string, batchId: string): Promise<IntakeBatch>;
-  finishUndo(ownerId: string, batchId: string): Promise<IntakeBatch>;
+  loadReversibleRecord(
+    input: ReversibleRecordInput,
+  ): Promise<JsonObject | null>;
+  deleteReversibleRecord(input: ReversibleRecordInput): Promise<void>;
+  loadKnowledgeDocumentForUndo(
+    input: OwnerScopedRecordInput,
+  ): Promise<JsonObject | null>;
+  restoreKnowledgeDocumentCollection(
+    input: RestoreKnowledgeDocumentInput,
+  ): Promise<void>;
+  loadRelationForUndo(
+    input: OwnerScopedRecordInput,
+  ): Promise<JsonObject | null>;
+  deleteRelationForUndo(input: OwnerScopedRecordInput): Promise<void>;
+  markStepUndone(input: UndoStepInput): Promise<void>;
+  markStepUndoConflict(input: UndoConflictStepInput): Promise<void>;
+  finishUndo(
+    ownerId: string,
+    batchId: string,
+    status?: "undone" | "partial",
+  ): Promise<IntakeBatch>;
+  clearExpiredUndoData(input: ClearExpiredUndoDataInput): Promise<void>;
 }
 
 export function getIntakeRepository(): IntakeRepository {
@@ -480,12 +540,103 @@ export function getIntakeRepository(): IntakeRepository {
       return requireBatch(ownerId, batchId);
     },
 
-    async finishUndo(ownerId, batchId) {
+    async loadReversibleRecord(input) {
       const { data, error } = await client
-        .from("workspace_intake_batches")
+        .from(input.table)
+        .select("*")
+        .eq("id", input.id)
+        .eq("user_id", input.ownerId)
+        .maybeSingle();
+      throwIfError(error);
+      return data ? asRow(data) : null;
+    },
+
+    async deleteReversibleRecord(input) {
+      const { error } = await client
+        .from(input.table)
+        .delete()
+        .eq("id", input.id)
+        .eq("user_id", input.ownerId);
+      throwIfError(error);
+    },
+
+    async loadKnowledgeDocumentForUndo(input) {
+      return getKnowledgeItem(input.ownerId, input.id);
+    },
+
+    async restoreKnowledgeDocumentCollection(input) {
+      const { error } = await client
+        .from("knowledge_documents")
+        .update({ collection_id: input.collectionId })
+        .eq("id", input.id)
+        .eq("user_id", input.ownerId);
+      throwIfError(error);
+    },
+
+    async loadRelationForUndo(input) {
+      const { data, error } = await client
+        .from("knowledge_relations")
+        .select("*")
+        .eq("id", input.id)
+        .eq("user_id", input.ownerId)
+        .maybeSingle();
+      throwIfError(error);
+      return data ? asRow(data) : null;
+    },
+
+    async deleteRelationForUndo(input) {
+      const { error } = await client
+        .from("knowledge_relations")
+        .delete()
+        .eq("id", input.id)
+        .eq("user_id", input.ownerId);
+      throwIfError(error);
+    },
+
+    async markStepUndone(input) {
+      const { data, error } = await client
+        .from("workspace_action_steps")
         .update({
           status: "undone",
           error_code: null,
+          undone_at: new Date().toISOString(),
+        })
+        .eq("id", input.stepId)
+        .eq("user_id", input.ownerId)
+        .eq("batch_id", input.batchId)
+        .eq("item_id", input.itemId)
+        .in("status", ["completed", "undo_conflict"])
+        .select("id")
+        .maybeSingle();
+      throwIfError(error);
+      if (!data) throw new Error("INTAKE_STEP_NOT_UNDOABLE");
+    },
+
+    async markStepUndoConflict(input) {
+      const { data, error } = await client
+        .from("workspace_action_steps")
+        .update({
+          status: "undo_conflict",
+          error_code: stableErrorCode(input.errorCode),
+          undone_at: null,
+        })
+        .eq("id", input.stepId)
+        .eq("user_id", input.ownerId)
+        .eq("batch_id", input.batchId)
+        .eq("item_id", input.itemId)
+        .in("status", ["completed", "undo_conflict"])
+        .select("id")
+        .maybeSingle();
+      throwIfError(error);
+      if (!data) throw new Error("INTAKE_STEP_NOT_UNDOABLE");
+    },
+
+    async finishUndo(ownerId, batchId, status = "undone") {
+      const { data, error } = await client
+        .from("workspace_intake_batches")
+        .update({
+          status,
+          error_code: status === "partial" ? "UNDO_RECORD_CHANGED" : null,
           undone_at: new Date().toISOString(),
         })
         .eq("user_id", ownerId)
@@ -496,6 +647,18 @@ export function getIntakeRepository(): IntakeRepository {
       throwIfError(error);
       if (!data) throw new Error("INTAKE_BATCH_NOT_UNDOING");
       return requireBatch(ownerId, batchId);
+    },
+
+    async clearExpiredUndoData(input) {
+      const { error } = await client
+        .from("workspace_action_steps")
+        .update({
+          inverse_input: null,
+          conflict_fingerprint: null,
+        })
+        .eq("user_id", input.ownerId)
+        .eq("batch_id", input.batchId);
+      throwIfError(error);
     },
   };
 }

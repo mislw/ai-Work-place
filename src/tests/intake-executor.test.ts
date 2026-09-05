@@ -531,6 +531,34 @@ describe("intake execution helpers", () => {
       fingerprintRecord({ a: 2 }),
     );
   });
+
+  it("fingerprints records independently of recursively nested volatile timestamps", () => {
+    expect(
+      fingerprintRecord({
+        id: "record-1",
+        updated_at: "2026-09-05T08:00:00.000Z",
+        metadata: {
+          last_edited_at: "2026-09-05T08:01:00.000Z",
+          nested: {
+            completed_at: "2026-09-05T08:02:00.000Z",
+            stable: true,
+          },
+        },
+      }),
+    ).toBe(
+      fingerprintRecord({
+        metadata: {
+          nested: {
+            stable: true,
+            completed_at: "2026-09-01T08:02:00.000Z",
+          },
+          last_edited_at: "2026-09-01T08:01:00.000Z",
+        },
+        updated_at: "2026-09-01T08:00:00.000Z",
+        id: "record-1",
+      }),
+    );
+  });
 });
 
 function createInput(actions: WorkspaceIntakePlanV1["actions"]) {
