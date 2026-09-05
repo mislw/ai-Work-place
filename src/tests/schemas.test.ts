@@ -193,9 +193,121 @@ describe("workspace intake database foundation", () => {
     expect(claimFunction).toMatch(
       /d\.status in \('ready', 'needs_attention'\)/,
     );
+    expect(claimFunction).toMatch(
+      /join public\.workspace_intake_batches b[\s\S]*?b\.id = i\.batch_id[\s\S]*?b\.user_id = i\.user_id/,
+    );
+    expect(claimFunction).toMatch(
+      /b\.status in \('processing', 'orchestrating', 'executing'\)/,
+    );
     expect(sql).toMatch(
       /grant execute on function public\.register_workspace_intake_batch[\s\S]*?to service_role;/,
     );
+  });
+
+  it("defines atomic owner-scoped retry and cancellation RPCs", () => {
+    const retryFunction = extractSqlDefinition(
+      sql,
+      "create or replace function public.retry_workspace_intake_batch",
+      "$$;",
+    );
+    const cancelFunction = extractSqlDefinition(
+      sql,
+      "create or replace function public.cancel_workspace_intake_batch",
+      "$$;",
+    );
+
+    expect(retryFunction).toMatch(
+      /from public\.workspace_intake_batches[\s\S]*?id = p_batch_id[\s\S]*?user_id = p_user_id[\s\S]*?status in \('failed', 'partial'\)[\s\S]*?for update/,
+    );
+    expect(retryFunction).toMatch(
+      /update public\.workspace_action_steps[\s\S]*?status = 'pending'[\s\S]*?status = 'failed'/,
+    );
+    expect(retryFunction).toMatch(
+      /update public\.workspace_intake_items[\s\S]*?status = 'awaiting_hermes'[\s\S]*?status in \('failed', 'partial'\)/,
+    );
+    expect(retryFunction).toMatch(
+      /update public\.workspace_intake_batches[\s\S]*?status = 'processing'/,
+    );
+    expect(retryFunction).not.toMatch(
+      /workspace_action_steps[\s\S]*?status = 'completed'[\s\S]*?status = 'pending'/,
+    );
+
+    expect(cancelFunction).toMatch(
+      /from public\.workspace_intake_batches[\s\S]*?id = p_batch_id[\s\S]*?user_id = p_user_id[\s\S]*?status in \('uploading', 'processing', 'orchestrating', 'executing'\)[\s\S]*?for update/,
+    );
+    expect(cancelFunction).toMatch(
+      /update public\.workspace_intake_items[\s\S]*?status = 'cancelled'[\s\S]*?status in \('waiting_extraction', 'awaiting_hermes', 'orchestrating', 'executing'\)/,
+    );
+    expect(cancelFunction).toMatch(
+      /update public\.workspace_intake_batches[\s\S]*?status = 'cancelled'/,
+    );
+    expect(cancelFunction).not.toMatch(/file_assets|knowledge_documents/);
+  });
+
+  it("defines transaction-scoped lease guards for every step mutation", () => {
+    const replaceFunction = extractSqlDefinition(
+      sql,
+      "create or replace function public.replace_workspace_intake_pending_steps",
+      "$$;",
+    );
+    const completeFunction = extractSqlDefinition(
+      sql,
+      "create or replace function public.complete_workspace_intake_step",
+      "$$;",
+    );
+    const failFunction = extractSqlDefinition(
+      sql,
+      "create or replace function public.fail_workspace_intake_step",
+      "$$;",
+    );
+
+    for (const definition of [
+      replaceFunction,
+      completeFunction,
+      failFunction,
+    ]) {
+      expect(definition).toMatch(
+        /from public\.workspace_intake_items[\s\S]*?id = p_item_id[\s\S]*?user_id = p_user_id[\s\S]*?lease_owner = p_worker_id[\s\S]*?status in \('orchestrating', 'executing'\)[\s\S]*?for update/,
+      );
+      expect(definition).toContain("raise exception 'INTAKE_LEASE_LOST'");
+    }
+
+    const deletePosition = replaceFunction.indexOf(
+      "delete from public.workspace_action_steps",
+    );
+    const insertPosition = replaceFunction.indexOf(
+      "insert into public.workspace_action_steps",
+    );
+    expect(deletePosition).toBeGreaterThanOrEqual(0);
+    expect(insertPosition).toBeGreaterThan(deletePosition);
+    expect(replaceFunction).toMatch(
+      /delete from public\.workspace_action_steps[\s\S]*?user_id = p_user_id[\s\S]*?item_id = p_item_id[\s\S]*?status = 'pending'/,
+    );
+    expect(replaceFunction).not.toMatch(/exception\s+when/i);
+
+    expect(completeFunction).toMatch(
+      /update public\.workspace_action_steps[\s\S]*?id = p_step_id[\s\S]*?user_id = p_user_id[\s\S]*?item_id = p_item_id[\s\S]*?status = 'pending'/,
+    );
+    expect(failFunction).toMatch(
+      /update public\.workspace_action_steps[\s\S]*?id = p_step_id[\s\S]*?user_id = p_user_id[\s\S]*?item_id = p_item_id[\s\S]*?status = 'pending'/,
+    );
+  });
+
+  it("restricts all intake mutation RPCs to service role", () => {
+    for (const signature of [
+      "retry_workspace_intake_batch(uuid, uuid)",
+      "cancel_workspace_intake_batch(uuid, uuid)",
+      "replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb)",
+      "complete_workspace_intake_step(uuid, uuid, uuid, text, jsonb, text, jsonb, text)",
+      "fail_workspace_intake_step(uuid, uuid, uuid, text, text)",
+    ]) {
+      expect(sql).toContain(
+        `revoke all on function public.${signature} from public, anon, authenticated`,
+      );
+      expect(sql).toContain(
+        `grant execute on function public.${signature} to service_role`,
+      );
+    }
   });
 
   it("publishes intake receipts through Realtime", () => {

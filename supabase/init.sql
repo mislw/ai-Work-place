@@ -900,7 +900,11 @@ as $$
     join public.knowledge_documents d
       on d.id = i.document_id
      and d.user_id = i.user_id
-    where d.status in ('ready', 'needs_attention')
+    join public.workspace_intake_batches b
+      on b.id = i.batch_id
+     and b.user_id = i.user_id
+    where b.status in ('processing', 'orchestrating', 'executing')
+      and d.status in ('ready', 'needs_attention')
       and i.available_at <= now()
       and (
         i.status in ('waiting_extraction', 'awaiting_hermes')
@@ -950,6 +954,298 @@ as $$
   join public.workspace_intake_batches b
     on b.id = c.batch_id
    and b.user_id = c.user_id;
+$$;
+
+create or replace function public.retry_workspace_intake_batch(
+  p_user_id uuid,
+  p_batch_id uuid
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_batch_id uuid;
+begin
+  select id into v_batch_id
+  from public.workspace_intake_batches
+  where id = p_batch_id
+    and user_id = p_user_id
+    and status in ('failed', 'partial')
+  for update;
+
+  if not found then
+    return false;
+  end if;
+
+  update public.workspace_action_steps
+  set status = 'pending',
+      error_code = null,
+      completed_at = null,
+      undone_at = null
+  where user_id = p_user_id
+    and batch_id = p_batch_id
+    and status = 'failed';
+
+  update public.workspace_intake_items
+  set status = 'awaiting_hermes',
+      error_code = null,
+      available_at = now(),
+      lease_owner = null,
+      lease_expires_at = null,
+      completed_at = null
+  where user_id = p_user_id
+    and batch_id = p_batch_id
+    and status in ('failed', 'partial');
+
+  update public.workspace_intake_batches
+  set status = 'processing',
+      error_code = null,
+      completed_at = null
+  where id = v_batch_id
+    and user_id = p_user_id;
+
+  return true;
+end;
+$$;
+
+create or replace function public.cancel_workspace_intake_batch(
+  p_user_id uuid,
+  p_batch_id uuid
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_batch_id uuid;
+begin
+  select id into v_batch_id
+  from public.workspace_intake_batches
+  where id = p_batch_id
+    and user_id = p_user_id
+    and status in ('uploading', 'processing', 'orchestrating', 'executing')
+  for update;
+
+  if not found then
+    return false;
+  end if;
+
+  update public.workspace_intake_items
+  set status = 'cancelled',
+      error_code = 'INTAKE_CANCELLED',
+      lease_owner = null,
+      lease_expires_at = null,
+      completed_at = now()
+  where user_id = p_user_id
+    and batch_id = p_batch_id
+    and status in ('waiting_extraction', 'awaiting_hermes', 'orchestrating', 'executing');
+
+  update public.workspace_intake_batches
+  set status = 'cancelled',
+      error_code = 'INTAKE_CANCELLED',
+      completed_at = now()
+  where id = v_batch_id
+    and user_id = p_user_id;
+
+  return true;
+end;
+$$;
+
+create or replace function public.replace_workspace_intake_pending_steps(
+  p_user_id uuid,
+  p_batch_id uuid,
+  p_item_id uuid,
+  p_worker_id text,
+  p_steps jsonb
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_step jsonb;
+begin
+  perform 1
+  from public.workspace_intake_items
+  where id = p_item_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and lease_owner = p_worker_id
+    and status in ('orchestrating', 'executing')
+  for update;
+
+  if not found then
+    raise exception 'INTAKE_LEASE_LOST';
+  end if;
+  if jsonb_typeof(p_steps) is distinct from 'array'
+    or jsonb_array_length(p_steps) > 30 then
+    raise exception 'INVALID_INTAKE_STEPS';
+  end if;
+
+  delete from public.workspace_action_steps
+  where user_id = p_user_id
+    and batch_id = p_batch_id
+    and item_id = p_item_id
+    and status = 'pending';
+
+  for v_step in select value from jsonb_array_elements(p_steps)
+  loop
+    if jsonb_typeof(v_step -> 'forwardInput') is distinct from 'object' then
+      raise exception 'INVALID_INTAKE_STEP_INPUT';
+    end if;
+    if v_step ? 'inverseInput'
+      and jsonb_typeof(v_step -> 'inverseInput') not in ('object', 'null') then
+      raise exception 'INVALID_INTAKE_STEP_INPUT';
+    end if;
+
+    insert into public.workspace_action_steps (
+      id,
+      user_id,
+      batch_id,
+      item_id,
+      sequence,
+      action_name,
+      forward_input,
+      forward_result,
+      inverse_action,
+      inverse_input,
+      conflict_fingerprint,
+      status,
+      confidence,
+      error_code
+    ) values (
+      coalesce(nullif(v_step ->> 'id', '')::uuid, gen_random_uuid()),
+      p_user_id,
+      p_batch_id,
+      p_item_id,
+      (v_step ->> 'sequence')::integer,
+      v_step ->> 'actionName',
+      v_step -> 'forwardInput',
+      null,
+      nullif(v_step ->> 'inverseAction', ''),
+      case
+        when jsonb_typeof(v_step -> 'inverseInput') = 'object'
+          then v_step -> 'inverseInput'
+        else null
+      end,
+      nullif(v_step ->> 'conflictFingerprint', ''),
+      'pending',
+      (v_step ->> 'confidence')::double precision,
+      null
+    );
+  end loop;
+
+  return true;
+end;
+$$;
+
+create or replace function public.complete_workspace_intake_step(
+  p_user_id uuid,
+  p_item_id uuid,
+  p_step_id uuid,
+  p_worker_id text,
+  p_forward_result jsonb,
+  p_inverse_action text,
+  p_inverse_input jsonb,
+  p_conflict_fingerprint text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform 1
+  from public.workspace_intake_items
+  where id = p_item_id
+    and user_id = p_user_id
+    and lease_owner = p_worker_id
+    and status in ('orchestrating', 'executing')
+  for update;
+
+  if not found then
+    raise exception 'INTAKE_LEASE_LOST';
+  end if;
+
+  update public.workspace_action_steps
+  set status = 'completed',
+      forward_result = p_forward_result,
+      inverse_action = p_inverse_action,
+      inverse_input = p_inverse_input,
+      conflict_fingerprint = p_conflict_fingerprint,
+      error_code = null,
+      completed_at = now()
+  where id = p_step_id
+    and user_id = p_user_id
+    and item_id = p_item_id
+    and status = 'pending';
+
+  if not found then
+    raise exception 'INTAKE_STEP_NOT_PENDING';
+  end if;
+  return true;
+end;
+$$;
+
+create or replace function public.fail_workspace_intake_step(
+  p_user_id uuid,
+  p_item_id uuid,
+  p_step_id uuid,
+  p_worker_id text,
+  p_error_code text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform 1
+  from public.workspace_intake_items
+  where id = p_item_id
+    and user_id = p_user_id
+    and lease_owner = p_worker_id
+    and status in ('orchestrating', 'executing')
+  for update;
+
+  if not found then
+    raise exception 'INTAKE_LEASE_LOST';
+  end if;
+
+  update public.workspace_action_steps
+  set status = 'failed',
+      error_code = case
+        when p_error_code in (
+          'HERMES_UNAVAILABLE',
+          'INVALID_HERMES_PLAN',
+          'PLAN_DOCUMENT_MISMATCH',
+          'HERMES_APPROVAL_REQUIRED',
+          'HERMES_RUN_TIMEOUT',
+          'INTAKE_PROMPT_TOO_LARGE',
+          'UNSAFE_INTAKE_ACTION',
+          'EXECUTION_FAILED',
+          'UNDO_RECORD_CHANGED',
+          'UNDO_WINDOW_EXPIRED',
+          'INTAKE_CANCELLED',
+          'PROCESSING_FAILED'
+        ) then p_error_code
+        else 'PROCESSING_FAILED'
+      end,
+      completed_at = null
+  where id = p_step_id
+    and user_id = p_user_id
+    and item_id = p_item_id
+    and status = 'pending';
+
+  if not found then
+    raise exception 'INTAKE_STEP_NOT_PENDING';
+  end if;
+  return true;
+end;
 $$;
 
 create or replace function public.complete_ingestion_job(p_job_id uuid)
@@ -1035,11 +1331,21 @@ revoke all on function public.register_workspace_intake_batch(uuid, text, text, 
 revoke all on function public.claim_ingestion_job(text, integer) from public, anon, authenticated;
 revoke all on function public.claim_workspace_intake_item(text, integer)
   from public, anon, authenticated;
+revoke all on function public.retry_workspace_intake_batch(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.cancel_workspace_intake_batch(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb) from public, anon, authenticated;
+revoke all on function public.complete_workspace_intake_step(uuid, uuid, uuid, text, jsonb, text, jsonb, text) from public, anon, authenticated;
+revoke all on function public.fail_workspace_intake_step(uuid, uuid, uuid, text, text) from public, anon, authenticated;
 revoke all on function public.complete_ingestion_job(uuid) from public, anon, authenticated;
 revoke all on function public.fail_ingestion_job(uuid, text) from public, anon, authenticated;
 grant execute on function public.claim_ingestion_job(text, integer) to service_role;
 grant execute on function public.claim_workspace_intake_item(text, integer)
   to service_role;
+grant execute on function public.retry_workspace_intake_batch(uuid, uuid) to service_role;
+grant execute on function public.cancel_workspace_intake_batch(uuid, uuid) to service_role;
+grant execute on function public.replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb) to service_role;
+grant execute on function public.complete_workspace_intake_step(uuid, uuid, uuid, text, jsonb, text, jsonb, text) to service_role;
+grant execute on function public.fail_workspace_intake_step(uuid, uuid, uuid, text, text) to service_role;
 grant execute on function public.complete_ingestion_job(uuid) to service_role;
 grant execute on function public.fail_ingestion_job(uuid, text) to service_role;
 grant execute on function public.register_knowledge_upload(uuid, text, text, text, bigint, text, text)

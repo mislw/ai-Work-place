@@ -32,6 +32,21 @@ const CANCELLABLE_ITEM_STATUSES: IntakeItemStatus[] = [
   "executing",
 ];
 
+const STABLE_ERROR_CODES = new Set([
+  "HERMES_UNAVAILABLE",
+  "INVALID_HERMES_PLAN",
+  "PLAN_DOCUMENT_MISMATCH",
+  "HERMES_APPROVAL_REQUIRED",
+  "HERMES_RUN_TIMEOUT",
+  "INTAKE_PROMPT_TOO_LARGE",
+  "UNSAFE_INTAKE_ACTION",
+  "EXECUTION_FAILED",
+  "UNDO_RECORD_CHANGED",
+  "UNDO_WINDOW_EXPIRED",
+  "INTAKE_CANCELLED",
+  "PROCESSING_FAILED",
+]);
+
 const BATCH_SELECT = `
   id,
   client_batch_id,
@@ -202,28 +217,6 @@ export function getIntakeRepository(): IntakeRepository {
     return data ? mapBatch(asRow(data)) : null;
   }
 
-  async function assertLeasedItem(input: {
-    ownerId: string;
-    itemId: string;
-    workerId: string;
-    batchId?: string;
-  }): Promise<void> {
-    let query = client
-      .from("workspace_intake_items")
-      .select("id")
-      .eq("id", input.itemId)
-      .eq("user_id", input.ownerId);
-    if (input.batchId) {
-      query = query.eq("batch_id", input.batchId);
-    }
-    const { data, error } = await query
-      .eq("lease_owner", input.workerId)
-      .in("status", ["orchestrating", "executing"])
-      .maybeSingle();
-    throwIfError(error);
-    if (!data) throw new Error("INTAKE_LEASE_LOST");
-  }
-
   async function requireBatch(ownerId: string, batchId: string) {
     const batch = await getBatch(ownerId, batchId);
     if (!batch) throw new Error("INTAKE_BATCH_NOT_FOUND");
@@ -352,81 +345,51 @@ export function getIntakeRepository(): IntakeRepository {
     },
 
     async replacePendingSteps(input) {
-      await assertLeasedItem(input);
-
-      const { error: deleteError } = await client
-        .from("workspace_action_steps")
-        .delete()
-        .eq("user_id", input.ownerId)
-        .eq("batch_id", input.batchId)
-        .eq("item_id", input.itemId)
-        .eq("status", "pending");
-      throwIfError(deleteError);
-
-      if (input.steps.length === 0) return;
-      const { error: insertError } = await client
-        .from("workspace_action_steps")
-        .insert(
-          input.steps.map((step) => ({
+      const { error } = await client.rpc(
+        "replace_workspace_intake_pending_steps",
+        {
+          p_user_id: input.ownerId,
+          p_batch_id: input.batchId,
+          p_item_id: input.itemId,
+          p_worker_id: input.workerId,
+          p_steps: input.steps.map((step) => ({
             ...(step.id ? { id: step.id } : {}),
-            user_id: input.ownerId,
-            batch_id: input.batchId,
-            item_id: input.itemId,
             sequence: step.sequence,
-            action_name: step.actionName,
-            forward_input: step.forwardInput,
-            forward_result: null,
-            inverse_action: step.inverseAction,
-            inverse_input: step.inverseInput,
-            conflict_fingerprint: step.conflictFingerprint,
-            status: "pending",
+            actionName: step.actionName,
+            forwardInput: step.forwardInput,
+            inverseAction: step.inverseAction,
+            inverseInput: step.inverseInput,
+            conflictFingerprint: step.conflictFingerprint,
             confidence: step.confidence,
-            error_code: null,
           })),
-        );
-      throwIfError(insertError);
+        },
+      );
+      throwIfError(error);
     },
 
     async markStepCompleted(input) {
-      await assertLeasedItem(input);
-      const { data, error } = await client
-        .from("workspace_action_steps")
-        .update({
-          status: "completed",
-          forward_result: input.forwardResult,
-          inverse_action: input.inverseAction,
-          inverse_input: input.inverseInput,
-          conflict_fingerprint: input.conflictFingerprint,
-          error_code: null,
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", input.stepId)
-        .eq("user_id", input.ownerId)
-        .eq("item_id", input.itemId)
-        .eq("status", "pending")
-        .select("id")
-        .maybeSingle();
+      const { error } = await client.rpc("complete_workspace_intake_step", {
+        p_user_id: input.ownerId,
+        p_item_id: input.itemId,
+        p_step_id: input.stepId,
+        p_worker_id: input.workerId,
+        p_forward_result: input.forwardResult,
+        p_inverse_action: input.inverseAction,
+        p_inverse_input: input.inverseInput,
+        p_conflict_fingerprint: input.conflictFingerprint,
+      });
       throwIfError(error);
-      if (!data) throw new Error("INTAKE_STEP_NOT_PENDING");
     },
 
     async markStepFailed(input) {
-      await assertLeasedItem(input);
-      const { data, error } = await client
-        .from("workspace_action_steps")
-        .update({
-          status: "failed",
-          error_code: stableErrorCode(input.errorCode),
-          completed_at: null,
-        })
-        .eq("id", input.stepId)
-        .eq("user_id", input.ownerId)
-        .eq("item_id", input.itemId)
-        .eq("status", "pending")
-        .select("id")
-        .maybeSingle();
+      const { error } = await client.rpc("fail_workspace_intake_step", {
+        p_user_id: input.ownerId,
+        p_item_id: input.itemId,
+        p_step_id: input.stepId,
+        p_worker_id: input.workerId,
+        p_error_code: stableErrorCode(input.errorCode),
+      });
       throwIfError(error);
-      if (!data) throw new Error("INTAKE_STEP_NOT_PENDING");
     },
 
     async releaseItem(input) {
@@ -454,80 +417,28 @@ export function getIntakeRepository(): IntakeRepository {
     },
 
     async retryFailed(ownerId, batchId) {
-      const { data, error } = await client
-        .from("workspace_intake_batches")
-        .update({
-          status: "processing",
-          error_code: null,
-          completed_at: null,
-        })
-        .eq("user_id", ownerId)
-        .eq("id", batchId)
-        .in("status", ["failed", "partial"])
-        .select("id")
-        .maybeSingle();
+      const { data, error } = await client.rpc(
+        "retry_workspace_intake_batch",
+        {
+          p_user_id: ownerId,
+          p_batch_id: batchId,
+        },
+      );
       throwIfError(error);
       if (!data) throw new Error("INTAKE_BATCH_NOT_RETRYABLE");
-
-      const { error: itemError } = await client
-        .from("workspace_intake_items")
-        .update({
-          status: "awaiting_hermes",
-          error_code: null,
-          available_at: new Date().toISOString(),
-          lease_owner: null,
-          lease_expires_at: null,
-          completed_at: null,
-        })
-        .eq("user_id", ownerId)
-        .eq("batch_id", batchId)
-        .in("status", ["failed", "partial"]);
-      throwIfError(itemError);
-
-      const { error: stepError } = await client
-        .from("workspace_action_steps")
-        .update({
-          status: "pending",
-          error_code: null,
-          completed_at: null,
-          undone_at: null,
-        })
-        .eq("user_id", ownerId)
-        .eq("batch_id", batchId)
-        .eq("status", "failed");
-      throwIfError(stepError);
       return requireBatch(ownerId, batchId);
     },
 
     async cancel(ownerId, batchId) {
-      const completedAt = new Date().toISOString();
-      const { data, error } = await client
-        .from("workspace_intake_batches")
-        .update({
-          status: "cancelled",
-          error_code: null,
-          completed_at: completedAt,
-        })
-        .eq("user_id", ownerId)
-        .eq("id", batchId)
-        .in("status", ACTIVE_BATCH_STATUSES)
-        .select("id")
-        .maybeSingle();
+      const { data, error } = await client.rpc(
+        "cancel_workspace_intake_batch",
+        {
+          p_user_id: ownerId,
+          p_batch_id: batchId,
+        },
+      );
       throwIfError(error);
       if (!data) throw new Error("INTAKE_BATCH_NOT_CANCELLABLE");
-
-      const { error: itemError } = await client
-        .from("workspace_intake_items")
-        .update({
-          status: "cancelled",
-          lease_owner: null,
-          lease_expires_at: null,
-          completed_at: completedAt,
-        })
-        .eq("user_id", ownerId)
-        .eq("batch_id", batchId)
-        .in("status", CANCELLABLE_ITEM_STATUSES);
-      throwIfError(itemError);
       return requireBatch(ownerId, batchId);
     },
 
@@ -656,20 +567,7 @@ function mapStep(row: Record<string, unknown>): IntakeActionStep {
 
 function stableErrorCode(value: string | null | undefined): string | null {
   if (!value) return null;
-  const firstLine = value.split(/\r?\n/, 1)[0] ?? "";
-  const explicitCode = firstLine.match(
-    /\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/,
-  )?.[0];
-  if (explicitCode) return explicitCode.slice(0, 100);
-
-  const stableSummary = firstLine.split(/[:=]/, 1)[0] ?? "";
-  const normalized = stableSummary
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 100);
-  return normalized || "UNKNOWN_ERROR";
+  return STABLE_ERROR_CODES.has(value) ? value : "PROCESSING_FAILED";
 }
 
 function throwIfError(error: { message: string } | null | undefined): void {

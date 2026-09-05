@@ -1,34 +1,10 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const {
-  createServiceClient,
-  from,
-  rpc,
-  select,
-  insert,
-  update,
-  remove,
-  eq,
-  inFilter,
-  order,
-  limit,
-  maybeSingle,
-  single,
-} = vi.hoisted(() => ({
+const { createServiceClient, from, rpc } = vi.hoisted(() => ({
   createServiceClient: vi.fn(),
   from: vi.fn(),
   rpc: vi.fn(),
-  select: vi.fn(),
-  insert: vi.fn(),
-  update: vi.fn(),
-  remove: vi.fn(),
-  eq: vi.fn(),
-  inFilter: vi.fn(),
-  order: vi.fn(),
-  limit: vi.fn(),
-  maybeSingle: vi.fn(),
-  single: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase/server", () => ({ createServiceClient }));
@@ -48,27 +24,49 @@ type QueryResult = {
   error?: { message: string } | null;
 };
 
+type QueryFilter = {
+  kind: "eq" | "in";
+  column: string;
+  value: unknown;
+};
+
+type QueryRecord = {
+  table: string;
+  operation: "select" | "insert" | "update" | "delete";
+  payload?: unknown;
+  filters: QueryFilter[];
+  limit?: number;
+};
+
 const queryResults: QueryResult[] = [];
+const queryRecords: QueryRecord[] = [];
 
 describe("owner-scoped intake repository", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     queryResults.length = 0;
-    from.mockImplementation(() => createQuery());
+    queryRecords.length = 0;
+    from.mockImplementation((table: string) => createQuery(table));
     rpc.mockImplementation(() =>
       Promise.resolve(queryResults.shift() ?? { data: null, error: null }),
     );
     createServiceClient.mockReturnValue({ from, rpc });
   });
 
-  it("loads a batch only through owner and batch id", async () => {
+  it("loads a batch with owner and batch id on the same query", async () => {
     queryResults.push({ data: batchRow(), error: null });
 
     const result = await getIntakeRepository().getBatch("owner-1", "batch-1");
 
-    expect(from).toHaveBeenCalledWith("workspace_intake_batches");
-    expect(eq).toHaveBeenCalledWith("user_id", "owner-1");
-    expect(eq).toHaveBeenCalledWith("id", "batch-1");
+    expect(queryRecords).toHaveLength(1);
+    expect(queryRecords[0]).toMatchObject({
+      table: "workspace_intake_batches",
+      operation: "select",
+      filters: [
+        { kind: "eq", column: "user_id", value: "owner-1" },
+        { kind: "eq", column: "id", value: "batch-1" },
+      ],
+    });
     expect(result).toEqual(
       expect.objectContaining({
         id: "batch-1",
@@ -76,7 +74,6 @@ describe("owner-scoped intake repository", () => {
         items: [
           expect.objectContaining({
             id: "item-1",
-            assetId: "asset-1",
             steps: [
               expect.objectContaining({
                 id: "step-1",
@@ -89,36 +86,42 @@ describe("owner-scoped intake repository", () => {
     );
   });
 
-  it("lists active batches and recent terminal batches through owner filters", async () => {
+  it("lists active and recent batches with an owner filter on each query", async () => {
     queryResults.push(
       { data: [batchRow({ id: "active-1", status: "processing" })], error: null },
-      {
-        data: [
-          batchRow({ id: "recent-1", status: "completed" }),
-          batchRow({ id: "active-1", status: "completed" }),
-        ],
-        error: null,
-      },
+      { data: [batchRow({ id: "recent-1", status: "completed" })], error: null },
     );
 
     const result = await getIntakeRepository().listActiveAndRecent("owner-1", 2);
 
-    expect(from).toHaveBeenCalledTimes(2);
-    expect(eq).toHaveBeenCalledWith("user_id", "owner-1");
-    expect(eq.mock.calls.filter(([column]) => column === "user_id")).toHaveLength(2);
-    expect(inFilter).toHaveBeenCalledWith(
-      "status",
-      expect.arrayContaining(["processing", "orchestrating", "executing"]),
-    );
-    expect(inFilter).toHaveBeenCalledWith(
-      "status",
-      expect.arrayContaining(["completed", "failed", "cancelled", "undone"]),
-    );
-    expect(limit).toHaveBeenCalledWith(2);
+    expect(queryRecords).toHaveLength(2);
+    for (const query of queryRecords) {
+      expect(query.table).toBe("workspace_intake_batches");
+      expect(query.filters).toContainEqual({
+        kind: "eq",
+        column: "user_id",
+        value: "owner-1",
+      });
+    }
+    expect(queryRecords[0]!.filters).toContainEqual({
+      kind: "in",
+      column: "status",
+      value: expect.arrayContaining(["processing", "orchestrating", "executing"]),
+    });
+    expect(queryRecords[1]).toMatchObject({
+      limit: 2,
+      filters: expect.arrayContaining([
+        {
+          kind: "in",
+          column: "status",
+          value: expect.arrayContaining(["completed", "failed", "cancelled", "undone"]),
+        },
+      ]),
+    });
     expect(result.map((batch) => batch.id)).toEqual(["active-1", "recent-1"]);
   });
 
-  it("registers camel-case item ids and hydrates the owner-scoped batch", async () => {
+  it("registers camel-case item ids and hydrates through an owner-scoped query", async () => {
     queryResults.push(
       { data: [{ batch_id: "batch-1", item_ids: ["item-1"] }], error: null },
       { data: batchRow(), error: null },
@@ -139,12 +142,14 @@ describe("owner-scoped intake repository", () => {
         },
       ],
     });
-    expect(eq).toHaveBeenCalledWith("user_id", "owner-1");
-    expect(eq).toHaveBeenCalledWith("id", "batch-1");
+    expect(queryRecords[0]!.filters).toEqual([
+      { kind: "eq", column: "user_id", value: "owner-1" },
+      { kind: "eq", column: "id", value: "batch-1" },
+    ]);
     expect(result.id).toBe("batch-1");
   });
 
-  it("does not register a document owned by another user", async () => {
+  it("surfaces registration ownership rejection", async () => {
     queryResults.push({
       data: null,
       error: { message: "INTAKE_DOCUMENT_NOT_OWNED" },
@@ -155,7 +160,7 @@ describe("owner-scoped intake repository", () => {
     ).rejects.toThrow("INTAKE_DOCUMENT_NOT_OWNED");
   });
 
-  it("claims the next item through the claim RPC and maps its owner context", async () => {
+  it("claims through the lease RPC and maps owner context", async () => {
     queryResults.push({
       data: [{ ...itemRow(), user_id: "owner-1", page_context: pageContext }],
       error: null,
@@ -177,7 +182,7 @@ describe("owner-scoped intake repository", () => {
     );
   });
 
-  it("guards lease renewal and Hermes attachment by item and lease owner", async () => {
+  it("keeps item id and lease owner on each direct worker mutation", async () => {
     queryResults.push(
       { data: { id: "item-1" }, error: null },
       { data: { id: "item-1" }, error: null },
@@ -187,21 +192,36 @@ describe("owner-scoped intake repository", () => {
     await repository.renewLease("item-1", "worker-1", 90);
     await repository.attachHermesRun("item-1", "worker-1", "run-1");
 
-    expect(eq.mock.calls.filter((call) => call[0] === "id")).toEqual([
-      ["id", "item-1"],
-      ["id", "item-1"],
-    ]);
-    expect(eq.mock.calls.filter((call) => call[0] === "lease_owner")).toEqual([
-      ["lease_owner", "worker-1"],
-      ["lease_owner", "worker-1"],
-    ]);
-    expect(inFilter).toHaveBeenCalledWith("status", [
-      "awaiting_hermes",
-      "orchestrating",
-    ]);
+    expect(queryRecords).toHaveLength(2);
+    expect(queryRecords[0]).toMatchObject({
+      table: "workspace_intake_items",
+      operation: "update",
+      filters: expect.arrayContaining([
+        { kind: "eq", column: "id", value: "item-1" },
+        { kind: "eq", column: "lease_owner", value: "worker-1" },
+        {
+          kind: "in",
+          column: "status",
+          value: ["orchestrating", "executing"],
+        },
+      ]),
+    });
+    expect(queryRecords[1]).toMatchObject({
+      table: "workspace_intake_items",
+      operation: "update",
+      filters: expect.arrayContaining([
+        { kind: "eq", column: "id", value: "item-1" },
+        { kind: "eq", column: "lease_owner", value: "worker-1" },
+        {
+          kind: "in",
+          column: "status",
+          value: ["awaiting_hermes", "orchestrating"],
+        },
+      ]),
+    });
   });
 
-  it("persists only the decision fields allowed by the repository contract", async () => {
+  it("owner-scopes the item decision mutation itself", async () => {
     queryResults.push({ data: { id: "item-1" }, error: null });
     const input: SetItemDecisionInput = {
       ownerId: "owner-1",
@@ -216,25 +236,27 @@ describe("owner-scoped intake repository", () => {
 
     await getIntakeRepository().setItemDecision(input);
 
-    expect(update).toHaveBeenCalledWith({
-      status: "executing",
-      confidence: 0.8,
-      decision_summary: "Create a note",
-      invalid_plan_count: 1,
-      error_code: null,
-      completed_at: null,
+    expect(queryRecords[0]).toMatchObject({
+      table: "workspace_intake_items",
+      operation: "update",
+      payload: {
+        status: "executing",
+        confidence: 0.8,
+        decision_summary: "Create a note",
+        invalid_plan_count: 1,
+        error_code: null,
+        completed_at: null,
+      },
+      filters: expect.arrayContaining([
+        { kind: "eq", column: "id", value: "item-1" },
+        { kind: "eq", column: "user_id", value: "owner-1" },
+        { kind: "eq", column: "lease_owner", value: "worker-1" },
+      ]),
     });
-    expect(eq).toHaveBeenCalledWith("id", "item-1");
-    expect(eq).toHaveBeenCalledWith("user_id", "owner-1");
-    expect(eq).toHaveBeenCalledWith("lease_owner", "worker-1");
   });
 
-  it("replaces only pending steps after verifying the current item lease", async () => {
-    queryResults.push(
-      { data: { id: "item-1" }, error: null },
-      { error: null },
-      { error: null },
-    );
+  it("replaces pending steps through one lease-guarded transaction RPC", async () => {
+    queryResults.push({ data: true, error: null });
     const input: ReplacePendingStepsInput = {
       ownerId: "owner-1",
       batchId: "batch-1",
@@ -255,36 +277,50 @@ describe("owner-scoped intake repository", () => {
 
     await getIntakeRepository().replacePendingSteps(input);
 
-    expect(from).toHaveBeenCalledWith("workspace_intake_items");
-    expect(eq).toHaveBeenCalledWith("lease_owner", "worker-1");
-    expect(remove).toHaveBeenCalled();
-    expect(eq).toHaveBeenCalledWith("status", "pending");
-    expect(insert).toHaveBeenCalledWith([
+    expect(rpc).toHaveBeenCalledWith(
+      "replace_workspace_intake_pending_steps",
       {
-        user_id: "owner-1",
-        batch_id: "batch-1",
-        item_id: "item-1",
-        sequence: 0,
-        action_name: "note.create",
-        forward_input: { title: "One" },
-        forward_result: null,
-        inverse_action: "note.delete",
-        inverse_input: null,
-        conflict_fingerprint: null,
-        status: "pending",
-        confidence: 0.9,
-        error_code: null,
+        p_user_id: "owner-1",
+        p_batch_id: "batch-1",
+        p_item_id: "item-1",
+        p_worker_id: "worker-1",
+        p_steps: [
+          {
+            sequence: 0,
+            actionName: "note.create",
+            forwardInput: { title: "One" },
+            inverseAction: "note.delete",
+            inverseInput: null,
+            conflictFingerprint: null,
+            confidence: 0.9,
+          },
+        ],
       },
-    ]);
+    );
+    expect(queryRecords).toEqual([]);
   });
 
-  it("journals completed and failed steps only while the worker owns the item lease", async () => {
-    queryResults.push(
-      { data: { id: "item-1" }, error: null },
-      { data: { id: "step-1" }, error: null },
-      { data: { id: "item-1" }, error: null },
-      { data: { id: "step-2" }, error: null },
-    );
+  it("does not fall back to delete and insert when step replacement fails", async () => {
+    queryResults.push({
+      data: null,
+      error: { message: "INTAKE_STEP_REPLACEMENT_FAILED" },
+    });
+
+    await expect(
+      getIntakeRepository().replacePendingSteps({
+        ownerId: "owner-1",
+        batchId: "batch-1",
+        itemId: "item-1",
+        workerId: "worker-1",
+        steps: [],
+      }),
+    ).rejects.toThrow("INTAKE_STEP_REPLACEMENT_FAILED");
+
+    expect(queryRecords).toEqual([]);
+  });
+
+  it("journals completed and failed steps through lease-guarded transaction RPCs", async () => {
+    queryResults.push({ data: true, error: null }, { data: true, error: null });
     const repository = getIntakeRepository();
     const completed: CompletedStepInput = {
       ownerId: "owner-1",
@@ -301,116 +337,148 @@ describe("owner-scoped intake repository", () => {
       itemId: "item-1",
       workerId: "worker-1",
       stepId: "step-2",
-      errorCode: " provider timeout: secret=abc ",
+      errorCode: "EXECUTION_FAILED",
     };
 
     await repository.markStepCompleted(completed);
     await repository.markStepFailed(failed);
 
-    expect(eq.mock.calls.filter((call) => call[0] === "lease_owner")).toEqual([
-      ["lease_owner", "worker-1"],
-      ["lease_owner", "worker-1"],
-    ]);
-    expect(update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: "completed",
-        forward_result: { noteId: "note-1" },
-      }),
+    expect(rpc).toHaveBeenNthCalledWith(
+      1,
+      "complete_workspace_intake_step",
+      {
+        p_user_id: "owner-1",
+        p_item_id: "item-1",
+        p_step_id: "step-1",
+        p_worker_id: "worker-1",
+        p_forward_result: { noteId: "note-1" },
+        p_inverse_action: "note.delete",
+        p_inverse_input: { id: "note-1" },
+        p_conflict_fingerprint: "note-1:v1",
+      },
     );
-    expect(update).toHaveBeenCalledWith({
-      status: "failed",
-      error_code: "PROVIDER_TIMEOUT",
-      completed_at: null,
+    expect(rpc).toHaveBeenNthCalledWith(2, "fail_workspace_intake_step", {
+      p_user_id: "owner-1",
+      p_item_id: "item-1",
+      p_step_id: "step-2",
+      p_worker_id: "worker-1",
+      p_error_code: "EXECUTION_FAILED",
     });
-    expect(eq).toHaveBeenCalledWith("status", "pending");
+    expect(queryRecords).toEqual([]);
   });
 
-  it("releases a failed lease with bounded backoff and a stable error code", async () => {
+  it.each([
+    "SECRET_TOKEN_ABC",
+    "Authorization: Bearer sk-live-secret",
+    "upstream provider returned confidential raw body without a colon",
+  ])("maps unplanned error text to PROCESSING_FAILED: %s", async (unsafeError) => {
+    queryResults.push({ data: true, error: null });
+
+    await getIntakeRepository().markStepFailed({
+      ownerId: "owner-1",
+      itemId: "item-1",
+      workerId: "worker-1",
+      stepId: "step-1",
+      errorCode: unsafeError,
+    });
+
+    expect(rpc).toHaveBeenCalledWith("fail_workspace_intake_step", {
+      p_user_id: "owner-1",
+      p_item_id: "item-1",
+      p_step_id: "step-1",
+      p_worker_id: "worker-1",
+      p_error_code: "PROCESSING_FAILED",
+    });
+  });
+
+  it("preserves an allowlisted release code on its guarded item mutation", async () => {
     queryResults.push({ data: { id: "item-1" }, error: null });
     const input: ReleaseIntakeItemInput = {
       ownerId: "owner-1",
       itemId: "item-1",
       workerId: "worker-1",
       status: "awaiting_hermes",
-      errorCode: "Hermes unavailable: credential abc\nstack: secret-token",
+      errorCode: "HERMES_UNAVAILABLE",
       availableAt: "2026-09-05T08:00:10.000Z",
     };
 
     await getIntakeRepository().releaseItem(input);
 
-    expect(update).toHaveBeenCalledWith({
-      status: "awaiting_hermes",
-      available_at: "2026-09-05T08:00:10.000Z",
-      lease_owner: null,
-      lease_expires_at: null,
-      error_code: "HERMES_UNAVAILABLE",
-      completed_at: null,
+    expect(queryRecords[0]).toMatchObject({
+      table: "workspace_intake_items",
+      operation: "update",
+      payload: {
+        status: "awaiting_hermes",
+        available_at: "2026-09-05T08:00:10.000Z",
+        lease_owner: null,
+        lease_expires_at: null,
+        error_code: "HERMES_UNAVAILABLE",
+        completed_at: null,
+      },
+      filters: expect.arrayContaining([
+        { kind: "eq", column: "id", value: "item-1" },
+        { kind: "eq", column: "user_id", value: "owner-1" },
+        { kind: "eq", column: "lease_owner", value: "worker-1" },
+      ]),
     });
-    expect(eq).toHaveBeenCalledWith("id", "item-1");
-    expect(eq).toHaveBeenCalledWith("user_id", "owner-1");
-    expect(eq).toHaveBeenCalledWith("lease_owner", "worker-1");
   });
 
-  it("retries only failed or partial work while preserving completed steps", async () => {
+  it("retries failed work through one owner-scoped transaction RPC", async () => {
     queryResults.push(
-      { data: { id: "batch-1" }, error: null },
-      { error: null },
-      { error: null },
+      { data: true, error: null },
       { data: batchRow({ status: "processing" }), error: null },
     );
 
-    await getIntakeRepository().retryFailed("owner-1", "batch-1");
+    const result = await getIntakeRepository().retryFailed("owner-1", "batch-1");
 
-    expect(update).toHaveBeenCalledWith({
-      status: "processing",
-      error_code: null,
-      completed_at: null,
+    expect(rpc).toHaveBeenCalledWith("retry_workspace_intake_batch", {
+      p_user_id: "owner-1",
+      p_batch_id: "batch-1",
     });
-    expect(update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: "awaiting_hermes",
-        error_code: null,
-        lease_owner: null,
-        lease_expires_at: null,
-      }),
-    );
-    expect(inFilter).toHaveBeenCalledWith("status", ["failed", "partial"]);
-    expect(update).toHaveBeenCalledWith({
-      status: "pending",
-      error_code: null,
-      completed_at: null,
-      undone_at: null,
+    expect(queryRecords).toHaveLength(1);
+    expect(queryRecords[0]).toMatchObject({
+      table: "workspace_intake_batches",
+      operation: "select",
+      filters: [
+        { kind: "eq", column: "user_id", value: "owner-1" },
+        { kind: "eq", column: "id", value: "batch-1" },
+      ],
     });
-    expect(eq).toHaveBeenCalledWith("status", "failed");
-    expect(eq).not.toHaveBeenCalledWith("status", "completed");
+    expect(result.status).toBe("processing");
   });
 
-  it("cancels only non-terminal intake rows without touching assets or documents", async () => {
+  it("does not hydrate when the retry transaction rejects current state", async () => {
+    queryResults.push({ data: false, error: null });
+
+    await expect(
+      getIntakeRepository().retryFailed("owner-1", "batch-1"),
+    ).rejects.toThrow("INTAKE_BATCH_NOT_RETRYABLE");
+
+    expect(queryRecords).toEqual([]);
+  });
+
+  it("cancels through one owner-scoped transaction RPC without asset queries", async () => {
     queryResults.push(
-      { data: { id: "batch-1" }, error: null },
-      { error: null },
+      { data: true, error: null },
       { data: batchRow({ status: "cancelled" }), error: null },
     );
 
-    await getIntakeRepository().cancel("owner-1", "batch-1");
+    const result = await getIntakeRepository().cancel("owner-1", "batch-1");
 
-    expect(inFilter).toHaveBeenCalledWith(
-      "status",
-      expect.arrayContaining(["uploading", "processing", "orchestrating", "executing"]),
-    );
-    expect(update).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "cancelled" }),
-    );
-    expect(from).not.toHaveBeenCalledWith("file_assets");
-    expect(from).not.toHaveBeenCalledWith("knowledge_documents");
-    expect(eq.mock.calls.filter((call) => call[0] === "user_id")).toEqual([
-      ["user_id", "owner-1"],
-      ["user_id", "owner-1"],
-      ["user_id", "owner-1"],
-    ]);
+    expect(rpc).toHaveBeenCalledWith("cancel_workspace_intake_batch", {
+      p_user_id: "owner-1",
+      p_batch_id: "batch-1",
+    });
+    expect(queryRecords).toHaveLength(1);
+    expect(queryRecords[0]!.table).toBe("workspace_intake_batches");
+    expect(queryRecords.some((query) => query.table === "file_assets")).toBe(false);
+    expect(
+      queryRecords.some((query) => query.table === "knowledge_documents"),
+    ).toBe(false);
+    expect(result.status).toBe("cancelled");
   });
 
-  it("guards begin and finish undo with owner and expected batch state", async () => {
+  it("keeps owner and expected state on each undo mutation", async () => {
     queryResults.push(
       { data: { id: "batch-1" }, error: null },
       { data: batchRow({ status: "undoing" }), error: null },
@@ -422,54 +490,78 @@ describe("owner-scoped intake repository", () => {
     await repository.beginUndo("owner-1", "batch-1");
     await repository.finishUndo("owner-1", "batch-1");
 
-    expect(inFilter).toHaveBeenCalledWith("status", ["completed", "partial"]);
-    expect(eq).toHaveBeenCalledWith("status", "undoing");
-    expect(eq.mock.calls.filter((call) => call[0] === "user_id")).toHaveLength(4);
+    expect(queryRecords).toHaveLength(4);
+    expect(queryRecords[0]).toMatchObject({
+      table: "workspace_intake_batches",
+      operation: "update",
+      filters: expect.arrayContaining([
+        { kind: "eq", column: "user_id", value: "owner-1" },
+        { kind: "eq", column: "id", value: "batch-1" },
+        {
+          kind: "in",
+          column: "status",
+          value: ["completed", "partial"],
+        },
+      ]),
+    });
+    expect(queryRecords[2]).toMatchObject({
+      table: "workspace_intake_batches",
+      operation: "update",
+      filters: expect.arrayContaining([
+        { kind: "eq", column: "user_id", value: "owner-1" },
+        { kind: "eq", column: "id", value: "batch-1" },
+        { kind: "eq", column: "status", value: "undoing" },
+      ]),
+    });
   });
 });
 
-function createQuery() {
+function createQuery(table: string) {
+  const record: QueryRecord = {
+    table,
+    operation: "select",
+    filters: [],
+  };
+  queryRecords.push(record);
   const result = () =>
     Promise.resolve(queryResults.shift() ?? { data: null, error: null });
   const chain = {
-    select(...args: unknown[]) {
-      select(...args);
+    select() {
       return chain;
     },
     insert(value: unknown) {
-      insert(value);
+      record.operation = "insert";
+      record.payload = value;
       return chain;
     },
     update(value: unknown) {
-      update(value);
+      record.operation = "update";
+      record.payload = value;
       return chain;
     },
     delete() {
-      remove();
+      record.operation = "delete";
       return chain;
     },
     eq(column: string, value: unknown) {
-      eq(column, value);
+      record.filters.push({ kind: "eq", column, value });
       return chain;
     },
     in(column: string, values: unknown[]) {
-      inFilter(column, values);
+      record.filters.push({ kind: "in", column, value: values });
       return chain;
     },
-    order(column: string, options?: unknown) {
-      order(column, options);
+    order() {
       return chain;
     },
     limit(value: number) {
-      limit(value);
+      record.limit = value;
       return chain;
     },
     maybeSingle() {
-      maybeSingle();
       return result();
     },
     single() {
-      single();
       return result();
     },
     then(
