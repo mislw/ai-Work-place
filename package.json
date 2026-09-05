@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "knowledge:worker": "tsx scripts/knowledge-worker.ts"
+    "knowledge:worker": "tsx scripts/knowledge-worker.ts",
+    "intake:worker": "tsx scripts/intake-worker.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

@@ -261,8 +261,8 @@ describe("owner-scoped intake repository", () => {
     ).rejects.toThrow("INTAKE_LEASE_LOST");
   });
 
-  it("owner-scopes the item decision mutation itself", async () => {
-    queryResults.push({ data: { id: "item-1" }, error: null });
+  it("uses one owner- and lease-scoped RPC for item and batch decisions", async () => {
+    queryResults.push({ data: true, error: null });
     const input: SetItemDecisionInput = {
       ownerId: "owner-1",
       itemId: "item-1",
@@ -276,23 +276,37 @@ describe("owner-scoped intake repository", () => {
 
     await getIntakeRepository().setItemDecision(input);
 
-    expect(queryRecords[0]).toMatchObject({
-      table: "workspace_intake_items",
-      operation: "update",
-      payload: {
-        status: "executing",
-        confidence: 0.8,
-        decision_summary: "Create a note",
-        invalid_plan_count: 1,
-        error_code: null,
-        completed_at: null,
+    expect(rpc).toHaveBeenCalledWith(
+      "set_workspace_intake_item_decision",
+      {
+        p_user_id: "owner-1",
+        p_item_id: "item-1",
+        p_worker_id: "worker-1",
+        p_status: "executing",
+        p_confidence: 0.8,
+        p_decision_summary: "Create a note",
+        p_invalid_plan_count: 1,
+        p_error_code: null,
       },
-      filters: expect.arrayContaining([
-        { kind: "eq", column: "id", value: "item-1" },
-        { kind: "eq", column: "user_id", value: "owner-1" },
-        { kind: "eq", column: "lease_owner", value: "worker-1" },
-      ]),
-    });
+    );
+    expect(queryRecords).toEqual([]);
+  });
+
+  it("fails closed when the decision RPC loses the lease", async () => {
+    queryResults.push({ data: false, error: null });
+
+    await expect(
+      getIntakeRepository().setItemDecision({
+        ownerId: "owner-1",
+        itemId: "item-1",
+        workerId: "worker-1",
+        status: "completed",
+        confidence: 0.8,
+        decisionSummary: "Done",
+        invalidPlanCount: 0,
+        errorCode: null,
+      }),
+    ).rejects.toThrow("INTAKE_LEASE_LOST");
   });
 
   it("replaces pending steps through one lease-guarded transaction RPC", async () => {

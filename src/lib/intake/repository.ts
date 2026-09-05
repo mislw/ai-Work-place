@@ -347,25 +347,19 @@ export function getIntakeRepository(): IntakeRepository {
     },
 
     async setItemDecision(input) {
-      const terminal = ["completed", "partial", "failed"].includes(
-        input.status,
+      const { data, error } = await client.rpc(
+        "set_workspace_intake_item_decision",
+        {
+          p_user_id: input.ownerId,
+          p_item_id: input.itemId,
+          p_worker_id: input.workerId,
+          p_status: input.status,
+          p_confidence: input.confidence,
+          p_decision_summary: input.decisionSummary,
+          p_invalid_plan_count: input.invalidPlanCount,
+          p_error_code: stableErrorCode(input.errorCode),
+        },
       );
-      const { data, error } = await client
-        .from("workspace_intake_items")
-        .update({
-          status: input.status,
-          confidence: input.confidence,
-          decision_summary: input.decisionSummary,
-          invalid_plan_count: input.invalidPlanCount,
-          error_code: stableErrorCode(input.errorCode),
-          completed_at: terminal ? new Date().toISOString() : null,
-        })
-        .eq("id", input.itemId)
-        .eq("user_id", input.ownerId)
-        .eq("lease_owner", input.workerId)
-        .in("status", ["orchestrating", "executing"])
-        .select("id")
-        .maybeSingle();
       throwIfError(error);
       if (!data) throw new Error("INTAKE_LEASE_LOST");
     },

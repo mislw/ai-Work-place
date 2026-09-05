@@ -986,6 +986,114 @@ begin
 end;
 $$;
 
+create or replace function public.set_workspace_intake_item_decision(
+  p_user_id uuid,
+  p_item_id uuid,
+  p_worker_id text,
+  p_status text,
+  p_confidence double precision,
+  p_decision_summary text,
+  p_invalid_plan_count integer,
+  p_error_code text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_batch_id uuid;
+  v_item_count integer;
+  v_active_count integer;
+  v_completed_count integer;
+  v_failed_count integer;
+  v_partial_count integer;
+  v_batch_status text;
+  v_batch_error_code text;
+begin
+  select batch_id into v_batch_id
+  from public.workspace_intake_items
+  where id = p_item_id
+    and user_id = p_user_id
+    and lease_owner = p_worker_id
+    and status in ('orchestrating', 'executing')
+  for update;
+
+  if not found then
+    raise exception 'INTAKE_LEASE_LOST';
+  end if;
+  if p_status not in ('executing', 'completed', 'partial', 'failed') then
+    raise exception 'INVALID_INTAKE_ITEM_STATUS';
+  end if;
+
+  update public.workspace_intake_items
+  set status = p_status,
+      confidence = p_confidence,
+      decision_summary = p_decision_summary,
+      invalid_plan_count = p_invalid_plan_count,
+      error_code = p_error_code,
+      completed_at = case
+        when p_status in ('completed', 'partial', 'failed') then now()
+        else null
+      end
+  where id = p_item_id
+    and user_id = p_user_id;
+
+  if p_status not in ('completed', 'partial', 'failed') then
+    return true;
+  end if;
+
+  select
+    count(*),
+    count(*) filter (
+      where status in (
+        'waiting_extraction',
+        'awaiting_hermes',
+        'orchestrating',
+        'executing'
+      )
+    ),
+    count(*) filter (where status = 'completed'),
+    count(*) filter (where status = 'failed'),
+    count(*) filter (where status = 'partial'),
+    max(error_code) filter (where status in ('failed', 'partial'))
+  into
+    v_item_count,
+    v_active_count,
+    v_completed_count,
+    v_failed_count,
+    v_partial_count,
+    v_batch_error_code
+  from public.workspace_intake_items
+  where batch_id = v_batch_id
+    and user_id = p_user_id;
+
+  if v_active_count > 0
+    or v_completed_count + v_failed_count + v_partial_count <> v_item_count then
+    return true;
+  end if;
+
+  v_batch_status := case
+    when v_completed_count = v_item_count then 'completed'
+    when v_failed_count = v_item_count then 'failed'
+    else 'partial'
+  end;
+
+  update public.workspace_intake_batches
+  set status = v_batch_status,
+      error_code = case
+        when v_batch_status = 'completed' then null
+        else coalesce(v_batch_error_code, 'PROCESSING_FAILED')
+      end,
+      completed_at = now()
+  where id = v_batch_id
+    and user_id = p_user_id
+    and status in ('processing', 'orchestrating', 'executing');
+
+  return true;
+end;
+$$;
+
 create or replace function public.retry_workspace_intake_batch(
   p_user_id uuid,
   p_batch_id uuid
@@ -1112,7 +1220,7 @@ begin
     raise exception 'INTAKE_LEASE_LOST';
   end if;
   if jsonb_typeof(p_steps) is distinct from 'array'
-    or jsonb_array_length(p_steps) > 30 then
+    or jsonb_array_length(p_steps) > 60 then
     raise exception 'INVALID_INTAKE_STEPS';
   end if;
 
@@ -1362,6 +1470,7 @@ revoke all on function public.claim_ingestion_job(text, integer) from public, an
 revoke all on function public.claim_workspace_intake_item(text, integer)
   from public, anon, authenticated;
 revoke all on function public.attach_workspace_intake_correction_run(uuid, uuid, text, text, integer) from public, anon, authenticated;
+revoke all on function public.set_workspace_intake_item_decision(uuid, uuid, text, text, double precision, text, integer, text) from public, anon, authenticated;
 revoke all on function public.retry_workspace_intake_batch(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.cancel_workspace_intake_batch(uuid, uuid) from public, anon, authenticated;
 revoke all on function public.replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb) from public, anon, authenticated;
@@ -1373,6 +1482,7 @@ grant execute on function public.claim_ingestion_job(text, integer) to service_r
 grant execute on function public.claim_workspace_intake_item(text, integer)
   to service_role;
 grant execute on function public.attach_workspace_intake_correction_run(uuid, uuid, text, text, integer) to service_role;
+grant execute on function public.set_workspace_intake_item_decision(uuid, uuid, text, text, double precision, text, integer, text) to service_role;
 grant execute on function public.retry_workspace_intake_batch(uuid, uuid) to service_role;
 grant execute on function public.cancel_workspace_intake_batch(uuid, uuid) to service_role;
 grant execute on function public.replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb) to service_role;

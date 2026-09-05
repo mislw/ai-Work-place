@@ -244,6 +244,37 @@ describe("workspace intake database foundation", () => {
     expect(cancelFunction).not.toMatch(/file_assets|knowledge_documents/);
   });
 
+  it("atomically derives terminal batch status from item decisions", () => {
+    const decisionFunction = extractSqlDefinition(
+      sql,
+      "create or replace function public.set_workspace_intake_item_decision",
+      "$$;",
+    );
+
+    expect(decisionFunction).toMatch(
+      /from public\.workspace_intake_items[\s\S]*?id = p_item_id[\s\S]*?user_id = p_user_id[\s\S]*?lease_owner = p_worker_id[\s\S]*?status in \('orchestrating', 'executing'\)[\s\S]*?for update/,
+    );
+    expect(decisionFunction).toMatch(
+      /update public\.workspace_intake_items[\s\S]*?status = p_status[\s\S]*?where id = p_item_id[\s\S]*?user_id = p_user_id/,
+    );
+    expect(decisionFunction).toMatch(
+      /status in \(\s*'waiting_extraction',\s*'awaiting_hermes',\s*'orchestrating',\s*'executing'\s*\)/,
+    );
+    expect(decisionFunction).toMatch(
+      /when v_completed_count = v_item_count then 'completed'/,
+    );
+    expect(decisionFunction).toMatch(
+      /when v_failed_count = v_item_count then 'failed'/,
+    );
+    expect(decisionFunction).toMatch(/else 'partial'/);
+    expect(decisionFunction).toMatch(
+      /update public\.workspace_intake_batches[\s\S]*?status = v_batch_status[\s\S]*?completed_at = now\(\)[\s\S]*?id = v_batch_id[\s\S]*?user_id = p_user_id[\s\S]*?status in \('processing', 'orchestrating', 'executing'\)/,
+    );
+    expect(decisionFunction).not.toMatch(
+      /status in \('cancelled', 'undoing', 'undone'\)/,
+    );
+  });
+
   it("defines transaction-scoped lease guards for every step mutation", () => {
     const replaceFunction = extractSqlDefinition(
       sql,
@@ -315,6 +346,7 @@ describe("workspace intake database foundation", () => {
   it("restricts all intake mutation RPCs to service role", () => {
     for (const signature of [
       "attach_workspace_intake_correction_run(uuid, uuid, text, text, integer)",
+      "set_workspace_intake_item_decision(uuid, uuid, text, text, double precision, text, integer, text)",
       "retry_workspace_intake_batch(uuid, uuid)",
       "cancel_workspace_intake_batch(uuid, uuid)",
       "replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb)",
