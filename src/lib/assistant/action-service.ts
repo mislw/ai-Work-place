@@ -1,21 +1,23 @@
 import { executeWorkbenchAction } from "@/lib/assistant/action-executor";
 import type { WorkbenchAction } from "@/lib/assistant/actions";
 import { createRouteHandlerClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export async function executeIdempotentWorkbenchAction(
   userId: string,
   action: WorkbenchAction,
   requestId: string | undefined,
+  client?: SupabaseClient,
 ): Promise<{ result: unknown; replayed: boolean }> {
   if (!action.action.endsWith(".create")) {
     return {
-      result: await executeWorkbenchAction(userId, action),
+      result: await executeWorkbenchAction(userId, action, client),
       replayed: false,
     };
   }
   if (!requestId) throw new Error("创建操作缺少 requestId");
 
-  const supabase = await createRouteHandlerClient();
+  const supabase = client ?? (await createRouteHandlerClient());
   const claim = await supabase
     .from("assistant_action_receipts")
     .insert({
@@ -42,7 +44,7 @@ export async function executeIdempotentWorkbenchAction(
 
   let result: unknown;
   try {
-    result = await executeWorkbenchAction(userId, action);
+    result = await executeWorkbenchAction(userId, action, supabase);
   } catch (error) {
     await supabase
       .from("assistant_action_receipts")

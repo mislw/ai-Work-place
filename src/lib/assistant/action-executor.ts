@@ -1,11 +1,13 @@
 import { createRouteHandlerClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { WorkbenchAction } from "@/lib/assistant/actions";
 
 export async function executeWorkbenchAction(
   userId: string,
   action: WorkbenchAction,
+  client?: SupabaseClient,
 ): Promise<unknown> {
-  const supabase = await createRouteHandlerClient();
+  const supabase = client ?? (await createRouteHandlerClient());
   const startedAt = Date.now();
 
   try {
@@ -19,7 +21,7 @@ export async function executeWorkbenchAction(
 }
 
 async function execute(
-  supabase: Awaited<ReturnType<typeof createRouteHandlerClient>>,
+  supabase: SupabaseClient,
   userId: string,
   action: WorkbenchAction,
 ) {
@@ -28,6 +30,7 @@ async function execute(
       let query = supabase
         .from("calendar_events")
         .select("*")
+        .eq("user_id", userId)
         .order("event_date", { ascending: true })
         .order("start_time", { ascending: true, nullsFirst: false })
         .limit(100);
@@ -49,13 +52,18 @@ async function execute(
           .from("calendar_events")
           .update(patch)
           .eq("id", id)
+          .eq("user_id", userId)
           .select("*")
           .single(),
       );
     }
     case "calendar.delete":
       await ensureSuccess(
-        supabase.from("calendar_events").delete().eq("id", action.input.id),
+        supabase
+          .from("calendar_events")
+          .delete()
+          .eq("id", action.input.id)
+          .eq("user_id", userId),
       );
       return { id: action.input.id, deleted: true };
 
@@ -63,6 +71,7 @@ async function execute(
       let query = supabase
         .from("todos")
         .select("*")
+        .eq("user_id", userId)
         .order("due_date", { ascending: true, nullsFirst: false })
         .order("due_time", { ascending: true, nullsFirst: false })
         .limit(100);
@@ -90,6 +99,7 @@ async function execute(
           .from("todos")
           .update(patch)
           .eq("id", id)
+          .eq("user_id", userId)
           .select("*")
           .single(),
       );
@@ -100,11 +110,18 @@ async function execute(
           .from("todos")
           .update({ status: "completed", completed_at: new Date().toISOString() })
           .eq("id", action.input.id)
+          .eq("user_id", userId)
           .select("*")
           .single(),
       );
     case "todo.delete":
-      await ensureSuccess(supabase.from("todos").delete().eq("id", action.input.id));
+      await ensureSuccess(
+        supabase
+          .from("todos")
+          .delete()
+          .eq("id", action.input.id)
+          .eq("user_id", userId),
+      );
       return { id: action.input.id, deleted: true };
 
     case "note.list": {
@@ -112,6 +129,7 @@ async function execute(
         await supabase
           .from("notes")
           .select("*")
+          .eq("user_id", userId)
           .order("is_pinned", { ascending: false })
           .order("updated_at", { ascending: false })
           .limit(100),
@@ -141,6 +159,7 @@ async function execute(
           last_edited_at: new Date().toISOString(),
         })
         .eq("id", id)
+        .eq("user_id", userId)
         .eq("version", version)
         .select("*")
         .maybeSingle();
@@ -149,7 +168,13 @@ async function execute(
       return response.data;
     }
     case "note.delete":
-      await ensureSuccess(supabase.from("notes").delete().eq("id", action.input.id));
+      await ensureSuccess(
+        supabase
+          .from("notes")
+          .delete()
+          .eq("id", action.input.id)
+          .eq("user_id", userId),
+      );
       return { id: action.input.id, deleted: true };
 
     case "document.list": {
@@ -157,6 +182,7 @@ async function execute(
         await supabase
           .from("document_links")
           .select("*")
+          .eq("user_id", userId)
           .order("updated_at", { ascending: false })
           .limit(100),
       );
@@ -177,13 +203,18 @@ async function execute(
           .from("document_links")
           .update(patch)
           .eq("id", id)
+          .eq("user_id", userId)
           .select("*")
           .single(),
       );
     }
     case "document.delete":
       await ensureSuccess(
-        supabase.from("document_links").delete().eq("id", action.input.id),
+        supabase
+          .from("document_links")
+          .delete()
+          .eq("id", action.input.id)
+          .eq("user_id", userId),
       );
       return { id: action.input.id, deleted: true };
   }
@@ -228,7 +259,7 @@ function filterRows(
 }
 
 async function writeAudit(
-  supabase: Awaited<ReturnType<typeof createRouteHandlerClient>>,
+  supabase: SupabaseClient,
   userId: string,
   action: string,
   success: boolean,
@@ -245,7 +276,7 @@ async function writeAudit(
 }
 
 async function safeWriteAudit(
-  supabase: Awaited<ReturnType<typeof createRouteHandlerClient>>,
+  supabase: SupabaseClient,
   userId: string,
   action: string,
   success: boolean,
