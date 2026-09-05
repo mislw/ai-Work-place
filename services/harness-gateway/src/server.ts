@@ -20,6 +20,7 @@ import {
   verifyBootstrapToken,
   verifySessionToken,
 } from "./tokens.js";
+import { handleInternalRunsRequest } from "./internal-runs-proxy.js";
 
 const APP_ORIGIN = "https://ai.mislw.cn";
 const FRAME_POLICY = `frame-ancestors ${APP_ORIGIN}`;
@@ -139,6 +140,10 @@ export function createGatewayServer(
 
     if (requestUrl.pathname === "/health") {
       sendText(response, 200, "ok");
+      return;
+    }
+
+    if (await handleInternalRunsRequest(request, response, config)) {
       return;
     }
 

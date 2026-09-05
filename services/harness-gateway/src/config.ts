@@ -1,6 +1,7 @@
 const MIN_SECRET_BYTES = 32;
 
 export interface GatewayConfig {
+  agentServiceSecret: string;
   harnessUpstream: string;
   ownerUserId: string;
   port: number;
@@ -13,6 +14,7 @@ export function getGatewayConfig(
   const harnessUpstream = environment.HARNESS_UPSTREAM;
   const ownerUserId = environment.HARNESS_OWNER_USER_ID;
   const rawSecret = environment.HARNESS_EMBED_SECRET;
+  const agentServiceSecret = environment.AGENT_SERVICE_SECRET ?? "";
   const port = Number(environment.PORT ?? "8787");
 
   if (!harnessUpstream) throw new Error("HARNESS_UPSTREAM is required");
@@ -24,11 +26,29 @@ export function getGatewayConfig(
   if (!rawSecret || new TextEncoder().encode(rawSecret).length < MIN_SECRET_BYTES) {
     throw new Error("HARNESS_EMBED_SECRET must be at least 32 bytes");
   }
+  if (new TextEncoder().encode(agentServiceSecret).length < MIN_SECRET_BYTES) {
+    throw new Error("AGENT_SERVICE_SECRET must be at least 32 bytes");
+  }
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
     throw new Error("PORT must be an integer between 0 and 65535");
   }
+  if (
+    agentServiceSecret === rawSecret ||
+    agentServiceSecret ===
+      (
+        environment.AGENT_UPSTREAM_SESSION_TOKEN ??
+        environment.HERMES_DASHBOARD_SESSION_TOKEN ??
+        ""
+      ).trim() ||
+    agentServiceSecret === environment.HARNESS_TOOL_SECRET?.trim()
+  ) {
+    throw new Error(
+      "AGENT_SERVICE_SECRET must be distinct from embed, upstream, and MCP secrets",
+    );
+  }
 
   return {
+    agentServiceSecret,
     harnessUpstream: upstreamUrl.toString(),
     ownerUserId,
     port,
