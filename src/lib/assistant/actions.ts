@@ -3,6 +3,33 @@ import { z } from "zod";
 const optionalText = z.string().trim().max(10_000).optional();
 const idInput = z.object({ id: z.string().min(1).max(200) });
 
+export const calendarCreateInputSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    description: optionalText,
+    event_date: z.string().date(),
+    start_time: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    end_time: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+    is_all_day: z.boolean().optional(),
+  });
+
+export const todoCreateInputSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    description: optionalText,
+    priority: z.enum(["low", "medium", "high"]).optional(),
+    due_date: z.string().date().optional(),
+    due_time: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  });
+
+export const noteCreateInputSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    content: z.string().max(50_000).optional(),
+    summary: z.string().max(2_000).optional(),
+    tags: z.array(z.string().trim().min(1).max(50)).max(20).optional(),
+  });
+
 export const workbenchActionSchema = z.discriminatedUnion("action", [
   z.object({
     action: z.literal("calendar.list"),
@@ -10,14 +37,7 @@ export const workbenchActionSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("calendar.create"),
-    input: z.object({
-      title: z.string().trim().min(1).max(200),
-      description: optionalText,
-      event_date: z.string().date(),
-      start_time: z.string().regex(/^\d{2}:\d{2}$/).optional(),
-      end_time: z.string().regex(/^\d{2}:\d{2}$/).optional(),
-      is_all_day: z.boolean().optional(),
-    }),
+    input: calendarCreateInputSchema,
   }),
   z.object({
     action: z.literal("calendar.update"),
@@ -42,13 +62,7 @@ export const workbenchActionSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("todo.create"),
-    input: z.object({
-      title: z.string().trim().min(1).max(200),
-      description: optionalText,
-      priority: z.enum(["low", "medium", "high"]).optional(),
-      due_date: z.string().date().optional(),
-      due_time: z.string().regex(/^\d{2}:\d{2}$/).optional(),
-    }),
+    input: todoCreateInputSchema,
   }),
   z.object({
     action: z.literal("todo.update"),
@@ -68,12 +82,7 @@ export const workbenchActionSchema = z.discriminatedUnion("action", [
   }),
   z.object({
     action: z.literal("note.create"),
-    input: z.object({
-      title: z.string().trim().min(1).max(200),
-      content: z.string().max(50_000).optional(),
-      summary: z.string().max(2_000).optional(),
-      tags: z.array(z.string().trim().min(1).max(50)).max(20).optional(),
-    }),
+    input: noteCreateInputSchema,
   }),
   z.object({
     action: z.literal("note.update"),

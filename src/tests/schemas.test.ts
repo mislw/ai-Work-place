@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { loginSchema, registerSchema, todoSchema, documentLinkSchema } from "@/lib/schemas";
 
@@ -72,5 +74,58 @@ describe("documentLinkSchema", () => {
       document_url: "https://example.com/doc",
     });
     expect(r.success).toBe(false);
+  });
+});
+
+describe("workspace intake database foundation", () => {
+  const sql = readFileSync(resolve(process.cwd(), "supabase/init.sql"), "utf8");
+
+  it("defines owner-scoped intake tables and browser read policies", () => {
+    expect(sql).toContain(
+      "create table if not exists public.workspace_intake_batches",
+    );
+    expect(sql).toContain(
+      "create table if not exists public.workspace_intake_items",
+    );
+    expect(sql).toContain(
+      "create table if not exists public.workspace_action_steps",
+    );
+    expect(sql).toMatch(
+      /alter table public\.workspace_intake_batches enable row level security;/,
+    );
+    expect(sql).toMatch(
+      /create policy "workspace_intake_batches_select_own"[\s\S]*?for select using \(auth\.uid\(\) = user_id\);/,
+    );
+    expect(sql).toMatch(
+      /revoke insert, update, delete on table public\.workspace_intake_batches,[\s\S]*?from anon, authenticated;/,
+    );
+  });
+
+  it("defines idempotent registration and lease-based claiming RPCs", () => {
+    expect(sql).toContain(
+      "create or replace function public.register_workspace_intake_batch",
+    );
+    expect(sql).toContain(
+      "create or replace function public.claim_workspace_intake_item",
+    );
+    expect(sql).toMatch(/for update skip locked/i);
+    expect(sql).toMatch(
+      /d\.status in \('ready', 'needs_attention'\)/,
+    );
+    expect(sql).toMatch(
+      /grant execute on function public\.register_workspace_intake_batch[\s\S]*?to service_role;/,
+    );
+  });
+
+  it("publishes intake receipts through Realtime", () => {
+    expect(sql).toContain(
+      "alter publication supabase_realtime add table public.workspace_intake_batches;",
+    );
+    expect(sql).toContain(
+      "alter publication supabase_realtime add table public.workspace_intake_items;",
+    );
+    expect(sql).toContain(
+      "alter publication supabase_realtime add table public.workspace_action_steps;",
+    );
   });
 });

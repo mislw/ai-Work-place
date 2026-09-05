@@ -461,6 +461,94 @@ create index if not exists ingestion_jobs_claim_idx
 create index if not exists ingestion_jobs_user_idx
   on public.ingestion_jobs (user_id, created_at desc);
 
+-- =========================================================
+-- 7.3 workspace intake：全局文件接管批次、条目与可撤销动作
+-- =========================================================
+create table if not exists public.workspace_intake_batches (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  client_batch_id text not null,
+  source_type text not null check (source_type in ('file_drop', 'file_picker')),
+  page_context jsonb not null,
+  status text not null check (
+    status in (
+      'uploading', 'processing', 'orchestrating', 'executing', 'completed',
+      'partial', 'failed', 'cancelled', 'undoing', 'undone'
+    )
+  ),
+  summary text,
+  error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  undone_at timestamptz,
+  unique (user_id, client_batch_id)
+);
+
+create table if not exists public.workspace_intake_items (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  batch_id uuid not null references public.workspace_intake_batches (id) on delete cascade,
+  asset_id uuid not null references public.file_assets (id) on delete restrict,
+  document_id uuid not null references public.knowledge_documents (id) on delete restrict,
+  job_id uuid not null references public.ingestion_jobs (id) on delete restrict,
+  hermes_run_id text,
+  status text not null check (
+    status in (
+      'waiting_extraction', 'awaiting_hermes', 'orchestrating', 'executing',
+      'completed', 'partial', 'failed', 'cancelled'
+    )
+  ),
+  confidence double precision check (confidence is null or confidence between 0 and 1),
+  decision_summary text,
+  error_code text,
+  attempt_count integer not null default 0 check (attempt_count >= 0),
+  invalid_plan_count integer not null default 0 check (invalid_plan_count >= 0),
+  available_at timestamptz not null default now(),
+  lease_owner text,
+  lease_expires_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  unique (batch_id, document_id)
+);
+
+create table if not exists public.workspace_action_steps (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users (id) on delete cascade,
+  batch_id uuid not null references public.workspace_intake_batches (id) on delete cascade,
+  item_id uuid not null references public.workspace_intake_items (id) on delete cascade,
+  sequence integer not null check (sequence >= 0),
+  action_name text not null,
+  forward_input jsonb not null,
+  forward_result jsonb,
+  inverse_action text,
+  inverse_input jsonb,
+  conflict_fingerprint text,
+  status text not null check (
+    status in ('pending', 'completed', 'failed', 'undone', 'undo_conflict')
+  ),
+  confidence double precision not null check (confidence between 0 and 1),
+  error_code text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  undone_at timestamptz,
+  unique (item_id, sequence)
+);
+
+create index if not exists workspace_intake_batches_user_recent_idx
+  on public.workspace_intake_batches (user_id, created_at desc);
+create index if not exists workspace_intake_batches_user_status_idx
+  on public.workspace_intake_batches (user_id, status, updated_at desc);
+create index if not exists workspace_intake_items_batch_idx
+  on public.workspace_intake_items (user_id, batch_id, created_at);
+create index if not exists workspace_intake_items_claim_idx
+  on public.workspace_intake_items (status, available_at, created_at)
+  where status in ('waiting_extraction', 'awaiting_hermes', 'orchestrating');
+create index if not exists workspace_action_steps_batch_idx
+  on public.workspace_action_steps (user_id, batch_id, item_id, sequence);
+
 drop trigger if exists trg_knowledge_collections_updated_at on public.knowledge_collections;
 create trigger trg_knowledge_collections_updated_at before update on public.knowledge_collections
 for each row execute function public.set_updated_at();
@@ -476,6 +564,15 @@ for each row execute function public.set_updated_at();
 drop trigger if exists trg_ingestion_jobs_updated_at on public.ingestion_jobs;
 create trigger trg_ingestion_jobs_updated_at before update on public.ingestion_jobs
 for each row execute function public.set_updated_at();
+drop trigger if exists trg_workspace_intake_batches_updated_at on public.workspace_intake_batches;
+create trigger trg_workspace_intake_batches_updated_at before update on public.workspace_intake_batches
+for each row execute function public.set_updated_at();
+drop trigger if exists trg_workspace_intake_items_updated_at on public.workspace_intake_items;
+create trigger trg_workspace_intake_items_updated_at before update on public.workspace_intake_items
+for each row execute function public.set_updated_at();
+drop trigger if exists trg_workspace_action_steps_updated_at on public.workspace_action_steps;
+create trigger trg_workspace_action_steps_updated_at before update on public.workspace_action_steps
+for each row execute function public.set_updated_at();
 
 alter table public.knowledge_collections enable row level security;
 alter table public.file_assets enable row level security;
@@ -485,6 +582,9 @@ alter table public.document_chunks enable row level security;
 alter table public.knowledge_proposals enable row level security;
 alter table public.knowledge_relations enable row level security;
 alter table public.ingestion_jobs enable row level security;
+alter table public.workspace_intake_batches enable row level security;
+alter table public.workspace_intake_items enable row level security;
+alter table public.workspace_action_steps enable row level security;
 
 create policy "knowledge_collections_all_own" on public.knowledge_collections
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
@@ -502,6 +602,20 @@ create policy "knowledge_relations_select_own" on public.knowledge_relations
   for select using (auth.uid() = user_id);
 create policy "ingestion_jobs_select_own" on public.ingestion_jobs
   for select using (auth.uid() = user_id);
+create policy "workspace_intake_batches_select_own" on public.workspace_intake_batches
+  for select using (auth.uid() = user_id);
+create policy "workspace_intake_items_select_own" on public.workspace_intake_items
+  for select using (auth.uid() = user_id);
+create policy "workspace_action_steps_select_own" on public.workspace_action_steps
+  for select using (auth.uid() = user_id);
+
+grant select on table public.workspace_intake_batches to authenticated;
+grant select on table public.workspace_intake_items to authenticated;
+grant select on table public.workspace_action_steps to authenticated;
+revoke insert, update, delete on table public.workspace_intake_batches,
+  public.workspace_intake_items,
+  public.workspace_action_steps
+  from anon, authenticated;
 
 create or replace function public.register_knowledge_upload(
   p_user_id uuid,
@@ -578,6 +692,122 @@ begin
 end;
 $$;
 
+create or replace function public.register_workspace_intake_batch(
+  p_user_id uuid,
+  p_client_batch_id text,
+  p_source_type text,
+  p_page_context jsonb,
+  p_items jsonb
+)
+returns table (
+  batch_id uuid,
+  item_ids uuid[]
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_batch_id uuid;
+  v_item jsonb;
+  v_asset_id uuid;
+  v_document_id uuid;
+  v_job_id uuid;
+begin
+  if p_user_id is null then
+    raise exception 'USER_ID_REQUIRED';
+  end if;
+  if nullif(btrim(p_client_batch_id), '') is null then
+    raise exception 'CLIENT_BATCH_ID_REQUIRED';
+  end if;
+  if p_source_type is null
+    or p_source_type not in ('file_drop', 'file_picker') then
+    raise exception 'INVALID_INTAKE_SOURCE_TYPE';
+  end if;
+  if jsonb_typeof(p_page_context) is distinct from 'object' then
+    raise exception 'INVALID_PAGE_CONTEXT';
+  end if;
+  if jsonb_typeof(p_items) is distinct from 'array' then
+    raise exception 'INVALID_INTAKE_ITEMS';
+  end if;
+  if jsonb_array_length(p_items) = 0
+    or jsonb_array_length(p_items) > 20 then
+    raise exception 'INVALID_INTAKE_ITEMS';
+  end if;
+
+  insert into public.workspace_intake_batches (
+    user_id, client_batch_id, source_type, page_context, status
+  ) values (
+    p_user_id, p_client_batch_id, p_source_type, p_page_context, 'processing'
+  )
+  on conflict (user_id, client_batch_id) do update
+  set source_type = excluded.source_type,
+      page_context = excluded.page_context
+  returning id into v_batch_id;
+
+  for v_item in select value from jsonb_array_elements(p_items)
+  loop
+    begin
+      v_asset_id := (v_item ->> 'assetId')::uuid;
+      v_document_id := (v_item ->> 'documentId')::uuid;
+      v_job_id := (v_item ->> 'jobId')::uuid;
+    exception
+      when invalid_text_representation then
+        raise exception 'INVALID_INTAKE_ITEM_IDS';
+    end;
+
+    if v_asset_id is null or v_document_id is null or v_job_id is null then
+      raise exception 'INVALID_INTAKE_ITEM_IDS';
+    end if;
+    if not exists (
+      select 1
+      from public.file_assets a
+      where a.id = v_asset_id and a.user_id = p_user_id
+    ) then
+      raise exception 'INTAKE_ASSET_NOT_OWNED';
+    end if;
+    if not exists (
+      select 1
+      from public.knowledge_documents d
+      where d.id = v_document_id
+        and d.user_id = p_user_id
+        and d.asset_id = v_asset_id
+    ) then
+      raise exception 'INTAKE_DOCUMENT_NOT_OWNED';
+    end if;
+    if not exists (
+      select 1
+      from public.ingestion_jobs j
+      where j.id = v_job_id
+        and j.user_id = p_user_id
+        and j.asset_id = v_asset_id
+        and j.document_id = v_document_id
+    ) then
+      raise exception 'INTAKE_JOB_NOT_OWNED';
+    end if;
+
+    insert into public.workspace_intake_items (
+      user_id, batch_id, asset_id, document_id, job_id, status
+    ) values (
+      p_user_id, v_batch_id, v_asset_id, v_document_id, v_job_id,
+      'waiting_extraction'
+    )
+    on conflict (batch_id, document_id) do nothing;
+  end loop;
+
+  return query
+  select
+    v_batch_id,
+    coalesce(
+      array_agg(i.id order by i.created_at, i.id),
+      array[]::uuid[]
+    )
+  from public.workspace_intake_items i
+  where i.batch_id = v_batch_id
+    and i.user_id = p_user_id;
+end;
+$$;
+
 create or replace function public.claim_ingestion_job(
   p_worker_id text,
   p_lease_seconds integer default 120
@@ -607,6 +837,94 @@ as $$
   from candidate
   where j.id = candidate.id
   returning j.*;
+$$;
+
+create or replace function public.claim_workspace_intake_item(
+  p_worker_id text,
+  p_lease_seconds integer default 120
+)
+returns table (
+  id uuid,
+  user_id uuid,
+  batch_id uuid,
+  asset_id uuid,
+  document_id uuid,
+  job_id uuid,
+  hermes_run_id text,
+  status text,
+  confidence double precision,
+  decision_summary text,
+  error_code text,
+  attempt_count integer,
+  invalid_plan_count integer,
+  available_at timestamptz,
+  lease_owner text,
+  lease_expires_at timestamptz,
+  created_at timestamptz,
+  updated_at timestamptz,
+  completed_at timestamptz,
+  page_context jsonb
+)
+language sql
+security definer
+set search_path = public
+as $$
+  with candidate as (
+    select i.id
+    from public.workspace_intake_items i
+    join public.knowledge_documents d
+      on d.id = i.document_id
+     and d.user_id = i.user_id
+    where d.status in ('ready', 'needs_attention')
+      and i.available_at <= now()
+      and (
+        i.status in ('waiting_extraction', 'awaiting_hermes')
+        or (
+          i.status = 'orchestrating'
+          and i.lease_expires_at < now()
+        )
+      )
+    order by i.available_at, i.created_at
+    for update of i skip locked
+    limit 1
+  ),
+  claimed as (
+    update public.workspace_intake_items i
+    set status = 'orchestrating',
+        lease_owner = p_worker_id,
+        lease_expires_at = now() + make_interval(
+          secs => greatest(30, p_lease_seconds)
+        ),
+        attempt_count = i.attempt_count + 1
+    from candidate
+    where i.id = candidate.id
+    returning i.*
+  )
+  select
+    c.id,
+    c.user_id,
+    c.batch_id,
+    c.asset_id,
+    c.document_id,
+    c.job_id,
+    c.hermes_run_id,
+    c.status,
+    c.confidence,
+    c.decision_summary,
+    c.error_code,
+    c.attempt_count,
+    c.invalid_plan_count,
+    c.available_at,
+    c.lease_owner,
+    c.lease_expires_at,
+    c.created_at,
+    c.updated_at,
+    c.completed_at,
+    b.page_context
+  from claimed c
+  join public.workspace_intake_batches b
+    on b.id = c.batch_id
+   and b.user_id = c.user_id;
 $$;
 
 create or replace function public.complete_ingestion_job(p_job_id uuid)
@@ -687,13 +1005,21 @@ grant execute on function public.search_knowledge_chunks(text, uuid, integer)
   to authenticated;
 revoke all on function public.register_knowledge_upload(uuid, text, text, text, bigint, text, text)
   from public, anon, authenticated;
+revoke all on function public.register_workspace_intake_batch(uuid, text, text, jsonb, jsonb)
+  from public, anon, authenticated;
 revoke all on function public.claim_ingestion_job(text, integer) from public, anon, authenticated;
+revoke all on function public.claim_workspace_intake_item(text, integer)
+  from public, anon, authenticated;
 revoke all on function public.complete_ingestion_job(uuid) from public, anon, authenticated;
 revoke all on function public.fail_ingestion_job(uuid, text) from public, anon, authenticated;
 grant execute on function public.claim_ingestion_job(text, integer) to service_role;
+grant execute on function public.claim_workspace_intake_item(text, integer)
+  to service_role;
 grant execute on function public.complete_ingestion_job(uuid) to service_role;
 grant execute on function public.fail_ingestion_job(uuid, text) to service_role;
 grant execute on function public.register_knowledge_upload(uuid, text, text, text, bigint, text, text)
+  to service_role;
+grant execute on function public.register_workspace_intake_batch(uuid, text, text, jsonb, jsonb)
   to service_role;
 
 -- =========================================================
@@ -708,6 +1034,9 @@ alter publication supabase_realtime add table public.document_links;
 alter publication supabase_realtime add table public.knowledge_documents;
 alter publication supabase_realtime add table public.knowledge_proposals;
 alter publication supabase_realtime add table public.ingestion_jobs;
+alter publication supabase_realtime add table public.workspace_intake_batches;
+alter publication supabase_realtime add table public.workspace_intake_items;
+alter publication supabase_realtime add table public.workspace_action_steps;
 
 -- =========================================================
 -- 9. 注册时自动创建 profiles / user_settings
