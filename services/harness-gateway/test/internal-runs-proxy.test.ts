@@ -10,6 +10,7 @@ import { signSessionToken } from "../src/tokens.js";
 const embedSecret = "embed-secret-0123456789abcdef0123";
 const agentServiceSecret = "service-secret-0123456789abcdef01";
 const upstreamToken = "upstream-token-0123456789abcdef012";
+const fallbackUpstreamToken = "hermes-token-0123456789abcdef012345";
 const toolSecret = "tool-secret-0123456789abcdef01234";
 
 function validEnvironment(
@@ -160,11 +161,39 @@ describe("agent service secret configuration", () => {
     assert.equal(config.internalRunsUpstreamToken, upstreamToken);
   });
 
+  for (const [name, primary] of [
+    ["undefined", undefined],
+    ["empty", ""],
+    ["whitespace", " \t "],
+  ] as const) {
+    it(`falls back to the trimmed Hermes token when primary is ${name}`, () => {
+      const config = getGatewayConfig(
+        validEnvironment({
+          AGENT_UPSTREAM_SESSION_TOKEN: primary,
+          HERMES_DASHBOARD_SESSION_TOKEN: `  ${fallbackUpstreamToken}  `,
+        }),
+      );
+
+      assert.equal(config.internalRunsUpstreamToken, fallbackUpstreamToken);
+    });
+  }
+
+  it("prefers and trims a nonblank primary upstream token", () => {
+    const config = getGatewayConfig(
+      validEnvironment({
+        AGENT_UPSTREAM_SESSION_TOKEN: `  ${upstreamToken}  `,
+        HERMES_DASHBOARD_SESSION_TOKEN: fallbackUpstreamToken,
+      }),
+    );
+
+    assert.equal(config.internalRunsUpstreamToken, upstreamToken);
+  });
+
   it("validates a configured internal Runs upstream token", () => {
     assert.throws(
       () =>
         getGatewayConfig(
-          validEnvironment({ AGENT_UPSTREAM_SESSION_TOKEN: "short" }),
+          validEnvironment({ AGENT_UPSTREAM_SESSION_TOKEN: "  short  " }),
         ),
       /AGENT_UPSTREAM_SESSION_TOKEN must be at least 32 bytes/,
     );

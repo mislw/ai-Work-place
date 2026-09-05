@@ -16,11 +16,12 @@ export function getGatewayConfig(
   const ownerUserId = environment.HARNESS_OWNER_USER_ID;
   const rawSecret = environment.HARNESS_EMBED_SECRET;
   const agentServiceSecret = environment.AGENT_SERVICE_SECRET || undefined;
-  const internalRunsUpstreamToken = (
-    environment.AGENT_UPSTREAM_SESSION_TOKEN ??
-    environment.HERMES_DASHBOARD_SESSION_TOKEN ??
-    ""
-  ).trim() || undefined;
+  const internalRunsUpstreamToken = [
+    environment.AGENT_UPSTREAM_SESSION_TOKEN,
+    environment.HERMES_DASHBOARD_SESSION_TOKEN,
+  ]
+    .map((value) => value?.trim())
+    .find((value): value is string => Boolean(value));
   const port = Number(environment.PORT ?? "8787");
 
   if (!harnessUpstream) throw new Error("HARNESS_UPSTREAM is required");
