@@ -472,7 +472,7 @@ async function attachCreatedRun(
     ),
 ): Promise<boolean> {
   if (signal.aborted) {
-    await stopAttachedRun(dependencies.runs, run.runId);
+    await stopUnattachedRun(dependencies.runs, run.runId);
     return false;
   }
   try {

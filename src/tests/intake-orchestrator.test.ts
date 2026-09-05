@@ -467,6 +467,43 @@ describe("processClaimedIntakeItem", () => {
     expect(harness.repository.releaseItem).not.toHaveBeenCalled();
   });
 
+  it("surfaces sanitized cleanup failure when cancellation arrives before attachment", async () => {
+    const harness = createHarness();
+    const controller = new AbortController();
+    harness.runs.createRun.mockImplementation(async () => {
+      controller.abort();
+      return {
+        runId: "run-untracked-after-abort",
+        status: "started",
+      };
+    });
+    harness.runs.stopRun.mockRejectedValue(
+      new Error("private provider stop failure"),
+    );
+
+    let thrown: unknown;
+    try {
+      await processClaimedIntakeItem(
+        claimedItem,
+        harness.dependencies,
+        controller.signal,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({
+      message: "HERMES_RUN_CLEANUP_FAILED",
+    });
+    expect(String(thrown)).not.toContain("private");
+    expect(harness.runs.stopRun).toHaveBeenCalledWith(
+      "run-untracked-after-abort",
+    );
+    expect(harness.repository.attachHermesRun).not.toHaveBeenCalled();
+    expect(harness.repository.releaseItem).not.toHaveBeenCalled();
+    expect(harness.executePlan).not.toHaveBeenCalled();
+  });
+
   it("marks a second invalid terminal plan failed", async () => {
     const harness = createHarness();
     harness.runs.getRun.mockResolvedValue({
