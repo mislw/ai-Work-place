@@ -1407,6 +1407,510 @@ begin
 end;
 $$;
 
+create or replace function public.normalize_intake_conflict_snapshot(
+  p_value jsonb
+)
+returns jsonb
+language sql
+immutable
+strict
+set search_path = public
+as $$
+  select case jsonb_typeof(p_value)
+    when 'object' then coalesce(
+      (
+        select jsonb_object_agg(
+          key,
+          public.normalize_intake_conflict_snapshot(value)
+          order by key
+        )
+        from jsonb_each(p_value)
+        where key not in ('updated_at', 'last_edited_at', 'completed_at')
+      ),
+      '{}'::jsonb
+    )
+    when 'array' then coalesce(
+      (
+        select jsonb_agg(
+          public.normalize_intake_conflict_snapshot(value)
+          order by ordinal
+        )
+        from jsonb_array_elements(p_value)
+          with ordinality as entries(value, ordinal)
+      ),
+      '[]'::jsonb
+    )
+    else p_value
+  end;
+$$;
+
+create or replace function public.undo_workspace_intake_record_step(
+  p_user_id uuid,
+  p_batch_id uuid,
+  p_item_id uuid,
+  p_step_id uuid,
+  p_table_name text,
+  p_record_id uuid,
+  p_expected_snapshot jsonb,
+  p_expected_fingerprint text
+)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_step public.workspace_action_steps%rowtype;
+  v_expected_action text;
+  v_current jsonb;
+begin
+  if p_table_name not in ('notes', 'todos', 'calendar_events') then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+  if jsonb_typeof(p_expected_snapshot) is distinct from 'object'
+    or public.normalize_intake_conflict_snapshot(p_expected_snapshot)
+      is distinct from p_expected_snapshot
+    or p_expected_fingerprint is null
+    or p_expected_fingerprint = '' then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+  v_expected_action := case p_table_name
+    when 'notes' then 'note.create'
+    when 'todos' then 'todo.create'
+    when 'calendar_events' then 'calendar.create'
+  end;
+
+  perform 1
+  from public.workspace_intake_batches
+  where id = p_batch_id
+    and user_id = p_user_id
+    and status = 'undoing'
+  for update;
+  if not found then
+    raise exception 'INTAKE_BATCH_NOT_UNDOING';
+  end if;
+
+  select * into v_step
+  from public.workspace_action_steps
+  where id = p_step_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and item_id = p_item_id
+    and status in ('completed', 'undo_conflict')
+  for update;
+  if not found then
+    raise exception 'INTAKE_STEP_NOT_UNDOABLE';
+  end if;
+  if jsonb_typeof(v_step.inverse_input) is distinct from 'object'
+    or jsonb_typeof(v_step.forward_result) is distinct from 'object'
+    or v_step.conflict_fingerprint
+      is distinct from p_expected_fingerprint
+    or v_step.action_name is distinct from v_expected_action
+    or v_step.inverse_action is distinct from 'record.delete'
+    or v_step.inverse_input ->> 'table' is distinct from p_table_name
+    or v_step.inverse_input ->> 'id' is distinct from p_record_id::text
+    or v_step.forward_result ->> 'id' is distinct from p_record_id::text
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'id'
+      is distinct from p_record_id::text
+    or v_step.forward_result -> 'postActionSnapshot'
+      is distinct from p_expected_snapshot then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  if p_table_name = 'notes' then
+    select public.normalize_intake_conflict_snapshot(to_jsonb(n))
+      into v_current
+    from public.notes n
+    where id = p_record_id
+      and user_id = p_user_id
+    for update;
+  elsif p_table_name = 'todos' then
+    select public.normalize_intake_conflict_snapshot(to_jsonb(t))
+      into v_current
+    from public.todos t
+    where id = p_record_id
+      and user_id = p_user_id
+    for update;
+  else
+    select public.normalize_intake_conflict_snapshot(to_jsonb(e))
+      into v_current
+    from public.calendar_events e
+    where id = p_record_id
+      and user_id = p_user_id
+    for update;
+  end if;
+
+  if not found then
+    update public.workspace_action_steps
+    set status = 'undone',
+        error_code = null,
+        undone_at = now()
+    where id = p_step_id
+      and user_id = p_user_id
+      and batch_id = p_batch_id
+      and item_id = p_item_id;
+    return 'already_missing';
+  end if;
+
+  if v_current is distinct from p_expected_snapshot then
+    update public.workspace_action_steps
+    set status = 'undo_conflict',
+        error_code = 'UNDO_RECORD_CHANGED',
+        undone_at = null
+    where id = p_step_id
+      and user_id = p_user_id
+      and batch_id = p_batch_id
+      and item_id = p_item_id;
+    return 'conflict';
+  end if;
+
+  if p_table_name = 'notes' then
+    delete from public.notes
+    where id = p_record_id and user_id = p_user_id;
+  elsif p_table_name = 'todos' then
+    delete from public.todos
+    where id = p_record_id and user_id = p_user_id;
+  else
+    delete from public.calendar_events
+    where id = p_record_id and user_id = p_user_id;
+  end if;
+
+  update public.workspace_action_steps
+  set status = 'undone',
+      error_code = null,
+      undone_at = now()
+  where id = p_step_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and item_id = p_item_id;
+  return 'undone';
+end;
+$$;
+
+create or replace function public.undo_workspace_intake_archive_step(
+  p_user_id uuid,
+  p_batch_id uuid,
+  p_item_id uuid,
+  p_step_id uuid,
+  p_document_id uuid,
+  p_previous_collection_id uuid,
+  p_expected_snapshot jsonb,
+  p_expected_fingerprint text
+)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_step public.workspace_action_steps%rowtype;
+  v_current jsonb;
+begin
+  if jsonb_typeof(p_expected_snapshot) is distinct from 'object'
+    or public.normalize_intake_conflict_snapshot(p_expected_snapshot)
+      is distinct from p_expected_snapshot
+    or p_expected_fingerprint is null
+    or p_expected_fingerprint = '' then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  perform 1
+  from public.workspace_intake_batches
+  where id = p_batch_id
+    and user_id = p_user_id
+    and status = 'undoing'
+  for update;
+  if not found then
+    raise exception 'INTAKE_BATCH_NOT_UNDOING';
+  end if;
+
+  perform 1
+  from public.workspace_intake_items
+  where id = p_item_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and document_id = p_document_id
+  for update;
+  if not found then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  select * into v_step
+  from public.workspace_action_steps
+  where id = p_step_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and item_id = p_item_id
+    and status in ('completed', 'undo_conflict')
+  for update;
+  if not found then
+    raise exception 'INTAKE_STEP_NOT_UNDOABLE';
+  end if;
+  if jsonb_typeof(v_step.inverse_input) is distinct from 'object'
+    or jsonb_typeof(v_step.forward_result) is distinct from 'object'
+    or v_step.conflict_fingerprint
+      is distinct from p_expected_fingerprint
+    or v_step.action_name is distinct from 'archive'
+    or v_step.inverse_action is distinct from 'archive.restore'
+    or v_step.inverse_input ->> 'documentId'
+      is distinct from p_document_id::text
+    or not (v_step.inverse_input ? 'previousCollectionId')
+    or v_step.inverse_input ->> 'previousCollectionId'
+      is distinct from p_previous_collection_id::text
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'id'
+      is distinct from p_document_id::text
+    or v_step.forward_result -> 'postActionSnapshot'
+      is distinct from p_expected_snapshot then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  select jsonb_build_object(
+      'id', d.id,
+      'collection_id', d.collection_id
+    ) into v_current
+  from public.knowledge_documents d
+  where id = p_document_id
+    and user_id = p_user_id
+  for update;
+
+  if not found then
+    update public.workspace_action_steps
+    set status = 'undone',
+        error_code = null,
+        undone_at = now()
+    where id = p_step_id
+      and user_id = p_user_id
+      and batch_id = p_batch_id
+      and item_id = p_item_id;
+    return 'already_missing';
+  end if;
+
+  if v_current is distinct from p_expected_snapshot then
+    update public.workspace_action_steps
+    set status = 'undo_conflict',
+        error_code = 'UNDO_RECORD_CHANGED',
+        undone_at = null
+    where id = p_step_id
+      and user_id = p_user_id
+      and batch_id = p_batch_id
+      and item_id = p_item_id;
+    return 'conflict';
+  end if;
+
+  update public.knowledge_documents
+  set collection_id = p_previous_collection_id
+  where id = p_document_id
+    and user_id = p_user_id;
+
+  update public.workspace_action_steps
+  set status = 'undone',
+      error_code = null,
+      undone_at = now()
+  where id = p_step_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and item_id = p_item_id;
+  return 'undone';
+end;
+$$;
+
+create or replace function public.undo_workspace_intake_relation_step(
+  p_user_id uuid,
+  p_batch_id uuid,
+  p_item_id uuid,
+  p_step_id uuid,
+  p_relation_id uuid,
+  p_expected_snapshot jsonb,
+  p_expected_fingerprint text
+)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_step public.workspace_action_steps%rowtype;
+  v_current jsonb;
+begin
+  if jsonb_typeof(p_expected_snapshot) is distinct from 'object'
+    or public.normalize_intake_conflict_snapshot(p_expected_snapshot)
+      is distinct from p_expected_snapshot
+    or p_expected_fingerprint is null
+    or p_expected_fingerprint = '' then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  perform 1
+  from public.workspace_intake_batches
+  where id = p_batch_id
+    and user_id = p_user_id
+    and status = 'undoing'
+  for update;
+  if not found then
+    raise exception 'INTAKE_BATCH_NOT_UNDOING';
+  end if;
+
+  select * into v_step
+  from public.workspace_action_steps
+  where id = p_step_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and item_id = p_item_id
+    and status in ('completed', 'undo_conflict')
+  for update;
+  if not found then
+    raise exception 'INTAKE_STEP_NOT_UNDOABLE';
+  end if;
+  if jsonb_typeof(v_step.inverse_input) is distinct from 'object'
+    or jsonb_typeof(v_step.forward_result) is distinct from 'object'
+    or v_step.conflict_fingerprint
+      is distinct from p_expected_fingerprint
+    or v_step.action_name is null
+    or v_step.action_name not in (
+      'relation.create:note',
+      'relation.create:todo',
+      'relation.create:calendar'
+    )
+    or v_step.inverse_action is distinct from 'relation.delete'
+    or v_step.inverse_input ->> 'id'
+      is distinct from p_relation_id::text
+    or v_step.forward_result ->> 'id'
+      is distinct from p_relation_id::text
+    or v_step.forward_result ->> 'replayed' is distinct from 'false'
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'id'
+      is distinct from p_relation_id::text
+    or v_step.forward_result -> 'postActionSnapshot'
+      is distinct from p_expected_snapshot then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  select to_jsonb(r) into v_current
+  from public.knowledge_relations r
+  where id = p_relation_id
+    and user_id = p_user_id
+  for update;
+
+  if not found then
+    update public.workspace_action_steps
+    set status = 'undone',
+        error_code = null,
+        undone_at = now()
+    where id = p_step_id
+      and user_id = p_user_id
+      and batch_id = p_batch_id
+      and item_id = p_item_id;
+    return 'already_missing';
+  end if;
+
+  if v_current is distinct from p_expected_snapshot then
+    update public.workspace_action_steps
+    set status = 'undo_conflict',
+        error_code = 'UNDO_RECORD_CHANGED',
+        undone_at = null
+    where id = p_step_id
+      and user_id = p_user_id
+      and batch_id = p_batch_id
+      and item_id = p_item_id;
+    return 'conflict';
+  end if;
+
+  delete from public.knowledge_relations
+  where id = p_relation_id
+    and user_id = p_user_id;
+
+  update public.workspace_action_steps
+  set status = 'undone',
+      error_code = null,
+      undone_at = now()
+  where id = p_step_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and item_id = p_item_id;
+  return 'undone';
+end;
+$$;
+
+create or replace function public.undo_workspace_intake_replayed_relation_step(
+  p_user_id uuid,
+  p_batch_id uuid,
+  p_item_id uuid,
+  p_step_id uuid,
+  p_relation_id uuid,
+  p_expected_snapshot jsonb,
+  p_expected_fingerprint text
+)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_step public.workspace_action_steps%rowtype;
+begin
+  if jsonb_typeof(p_expected_snapshot) is distinct from 'object'
+    or public.normalize_intake_conflict_snapshot(p_expected_snapshot)
+      is distinct from p_expected_snapshot
+    or p_expected_fingerprint is null
+    or p_expected_fingerprint = '' then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  perform 1
+  from public.workspace_intake_batches
+  where id = p_batch_id
+    and user_id = p_user_id
+    and status = 'undoing'
+  for update;
+  if not found then
+    raise exception 'INTAKE_BATCH_NOT_UNDOING';
+  end if;
+
+  select * into v_step
+  from public.workspace_action_steps
+  where id = p_step_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and item_id = p_item_id
+    and status in ('completed', 'undo_conflict')
+  for update;
+  if not found then
+    raise exception 'INTAKE_STEP_NOT_UNDOABLE';
+  end if;
+  if jsonb_typeof(v_step.forward_result) is distinct from 'object'
+    or v_step.conflict_fingerprint
+      is distinct from p_expected_fingerprint
+    or v_step.action_name is null
+    or v_step.action_name not in (
+      'relation.create:note',
+      'relation.create:todo',
+      'relation.create:calendar'
+    )
+    or v_step.inverse_action is not null
+    or v_step.inverse_input is not null
+    or v_step.forward_result ->> 'id'
+      is distinct from p_relation_id::text
+    or v_step.forward_result ->> 'replayed' is distinct from 'true'
+    or jsonb_typeof(v_step.forward_result -> 'postActionSnapshot')
+      is distinct from 'object'
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'id'
+      is distinct from p_relation_id::text
+    or v_step.forward_result -> 'postActionSnapshot'
+      is distinct from p_expected_snapshot then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  update public.workspace_action_steps
+  set status = 'undone',
+      error_code = null,
+      undone_at = now()
+  where id = p_step_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and item_id = p_item_id;
+  return 'undone';
+end;
+$$;
+
 create or replace function public.complete_ingestion_job(p_job_id uuid)
 returns void
 language sql
@@ -1497,6 +2001,10 @@ revoke all on function public.cancel_workspace_intake_batch(uuid, uuid) from pub
 revoke all on function public.replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb) from public, anon, authenticated;
 revoke all on function public.complete_workspace_intake_step(uuid, uuid, uuid, text, jsonb, text, jsonb, text) from public, anon, authenticated;
 revoke all on function public.fail_workspace_intake_step(uuid, uuid, uuid, text, text) from public, anon, authenticated;
+revoke all on function public.undo_workspace_intake_record_step(uuid, uuid, uuid, uuid, text, uuid, jsonb, text) from public, anon, authenticated;
+revoke all on function public.undo_workspace_intake_archive_step(uuid, uuid, uuid, uuid, uuid, uuid, jsonb, text) from public, anon, authenticated;
+revoke all on function public.undo_workspace_intake_relation_step(uuid, uuid, uuid, uuid, uuid, jsonb, text) from public, anon, authenticated;
+revoke all on function public.undo_workspace_intake_replayed_relation_step(uuid, uuid, uuid, uuid, uuid, jsonb, text) from public, anon, authenticated;
 revoke all on function public.complete_ingestion_job(uuid) from public, anon, authenticated;
 revoke all on function public.fail_ingestion_job(uuid, text) from public, anon, authenticated;
 grant execute on function public.claim_ingestion_job(text, integer) to service_role;
@@ -1509,6 +2017,10 @@ grant execute on function public.cancel_workspace_intake_batch(uuid, uuid) to se
 grant execute on function public.replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb) to service_role;
 grant execute on function public.complete_workspace_intake_step(uuid, uuid, uuid, text, jsonb, text, jsonb, text) to service_role;
 grant execute on function public.fail_workspace_intake_step(uuid, uuid, uuid, text, text) to service_role;
+grant execute on function public.undo_workspace_intake_record_step(uuid, uuid, uuid, uuid, text, uuid, jsonb, text) to service_role;
+grant execute on function public.undo_workspace_intake_archive_step(uuid, uuid, uuid, uuid, uuid, uuid, jsonb, text) to service_role;
+grant execute on function public.undo_workspace_intake_relation_step(uuid, uuid, uuid, uuid, uuid, jsonb, text) to service_role;
+grant execute on function public.undo_workspace_intake_replayed_relation_step(uuid, uuid, uuid, uuid, uuid, jsonb, text) to service_role;
 grant execute on function public.complete_ingestion_job(uuid) to service_role;
 grant execute on function public.fail_ingestion_job(uuid, text) to service_role;
 grant execute on function public.register_knowledge_upload(uuid, text, text, text, bigint, text, text)

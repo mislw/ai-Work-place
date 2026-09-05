@@ -7,18 +7,18 @@ const VOLATILE_FIELDS = new Set([
 ]);
 
 export function fingerprintRecord(value: unknown): string {
-  const canonical = JSON.stringify(sortJsonValue(value));
+  const canonical = JSON.stringify(normalizeFingerprintValue(value));
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
 
-function sortJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortJsonValue);
+export function normalizeFingerprintValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeFingerprintValue);
   if (!isRecord(value)) return value;
   return Object.fromEntries(
     Object.keys(value)
       .filter((key) => !VOLATILE_FIELDS.has(key))
       .sort()
-      .map((key) => [key, sortJsonValue(value[key])]),
+      .map((key) => [key, normalizeFingerprintValue(value[key])]),
   );
 }
 

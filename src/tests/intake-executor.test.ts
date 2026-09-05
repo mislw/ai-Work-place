@@ -184,6 +184,12 @@ describe("executeIntakePlan", () => {
     );
 
     expect(completedStep(harness.steps, "archive")).toMatchObject({
+      forwardResult: expect.objectContaining({
+        postActionSnapshot: {
+          id: DOCUMENT_ID,
+          collection_id: "collection-new",
+        },
+      }),
       inverseAction: "archive.restore",
       inverseInput: {
         documentId: DOCUMENT_ID,
@@ -192,10 +198,17 @@ describe("executeIntakePlan", () => {
       conflictFingerprint: fingerprintRecord({
         id: DOCUMENT_ID,
         collection_id: "collection-new",
-        title: "Source document",
       }),
     });
     expect(completedStep(harness.steps, "note.create")).toMatchObject({
+      forwardResult: expect.objectContaining({
+        postActionSnapshot: {
+          id: "note-1",
+          title: "Source note",
+          content: "",
+          tags: [],
+        },
+      }),
       inverseAction: "record.delete",
       inverseInput: { table: "notes", id: "note-1" },
       conflictFingerprint: fingerprintRecord({
@@ -245,6 +258,13 @@ describe("executeIntakePlan", () => {
       confidence: 0.86,
     });
     expect(completedStep(harness.steps, "relation.create:note")).toMatchObject({
+      forwardResult: expect.objectContaining({
+        postActionSnapshot: expect.objectContaining({
+          id: "relation-note",
+          source_id: DOCUMENT_ID,
+          target_id: "note-1",
+        }),
+      }),
       inverseAction: "relation.delete",
       inverseInput: { id: "relation-note" },
     });
@@ -273,6 +293,11 @@ describe("executeIntakePlan", () => {
       forwardResult: expect.objectContaining({
         id: "relation-existing",
         replayed: true,
+        postActionSnapshot: expect.objectContaining({
+          id: "relation-existing",
+          source_id: DOCUMENT_ID,
+          target_id: "note-1",
+        }),
       }),
       inverseAction: null,
       inverseInput: null,

@@ -6,7 +6,10 @@ import {
   type IntakeActionStep,
   type WorkspaceIntakePlanV1,
 } from "@/lib/intake/contracts";
-import { fingerprintRecord } from "@/lib/intake/fingerprint";
+import {
+  fingerprintRecord,
+  normalizeFingerprintValue,
+} from "@/lib/intake/fingerprint";
 import type {
   IntakeRepository,
   PendingStepInput,
@@ -353,8 +356,19 @@ async function executeArchiveStep(
         }
       : {}),
   });
+  const postActionSnapshot = {
+    id: input.documentId,
+    collection_id: readNullableString(
+      archived.updatedDocument.collectionId ??
+        archived.updatedDocument.collection_id,
+    ),
+  };
   return {
-    forwardResult: { ...archived.result, replayed: false },
+    forwardResult: {
+      ...archived.result,
+      replayed: false,
+      postActionSnapshot,
+    },
     inverseAction: "archive.restore",
     inverseInput: {
       documentId: input.documentId,
@@ -362,7 +376,7 @@ async function executeArchiveStep(
         step.forwardInput.previousCollectionId,
       ),
     },
-    conflictFingerprint: fingerprintRecord(archived.updatedDocument),
+    conflictFingerprint: fingerprintRecord(postActionSnapshot),
   };
 }
 
@@ -383,14 +397,19 @@ async function executeCreateStep(
   );
   const created = requireRecord(receipt.result);
   const id = requireString(created.id);
+  const postActionSnapshot = normalizedSnapshot(created);
   return {
-    forwardResult: { ...created, replayed: receipt.replayed },
+    forwardResult: {
+      ...created,
+      replayed: receipt.replayed,
+      postActionSnapshot,
+    },
     inverseAction: "record.delete",
     inverseInput: {
       table: actionTable(step.actionName as CreateActionKind),
       id,
     },
-    conflictFingerprint: fingerprintRecord(created),
+    conflictFingerprint: fingerprintRecord(postActionSnapshot),
   };
 }
 
@@ -420,13 +439,18 @@ async function executeRelationStep(
     confidence: step.confidence,
   });
   const relation = requireRecord(receipt.result);
+  const postActionSnapshot = normalizedSnapshot(relation);
   return {
-    forwardResult: { ...relation, replayed: receipt.replayed },
+    forwardResult: {
+      ...relation,
+      replayed: receipt.replayed,
+      postActionSnapshot,
+    },
     inverseAction: receipt.replayed ? null : "relation.delete",
     inverseInput: receipt.replayed
       ? null
       : { id: requireString(relation.id) },
-    conflictFingerprint: fingerprintRecord(relation),
+    conflictFingerprint: fingerprintRecord(postActionSnapshot),
   };
 }
 
@@ -506,6 +530,10 @@ function isLeaseLost(error: unknown): boolean {
 function requireRecord(value: unknown): JsonObject {
   if (!isRecord(value)) throw new Error("INVALID_EXECUTION_RESULT");
   return value;
+}
+
+function normalizedSnapshot(value: JsonObject): JsonObject {
+  return requireRecord(normalizeFingerprintValue(value));
 }
 
 function requireString(value: unknown): string {

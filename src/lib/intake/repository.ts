@@ -8,7 +8,6 @@ import type {
   IntakeItemStatus,
   WorkspacePageContextV1,
 } from "@/lib/intake/contracts";
-import { getKnowledgeItem } from "@/lib/knowledge/search";
 
 const ACTIVE_BATCH_STATUSES: IntakeBatchStatus[] = [
   "uploading",
@@ -187,24 +186,34 @@ export interface OwnerScopedRecordInput {
   id: string;
 }
 
-export interface ReversibleRecordInput extends OwnerScopedRecordInput {
-  table: ReversibleRecordTable;
+export type UndoStepResult = "undone" | "already_missing" | "conflict";
+
+export interface AtomicUndoStepInput extends UndoStepInput {
+  expectedSnapshot: JsonObject;
+  expectedFingerprint: string;
 }
 
-export interface RestoreKnowledgeDocumentInput
-  extends OwnerScopedRecordInput {
-  collectionId: string | null;
+export interface UndoRecordStepInput extends AtomicUndoStepInput {
+  table: ReversibleRecordTable;
+  recordId: string;
 }
+
+export interface UndoArchiveStepInput extends AtomicUndoStepInput {
+  documentId: string;
+  previousCollectionId: string | null;
+}
+
+export interface UndoRelationStepInput extends AtomicUndoStepInput {
+  relationId: string;
+}
+
+export type UndoReplayedRelationStepInput = UndoRelationStepInput;
 
 export interface UndoStepInput {
   ownerId: string;
   batchId: string;
   itemId: string;
   stepId: string;
-}
-
-export interface UndoConflictStepInput extends UndoStepInput {
-  errorCode: "UNDO_RECORD_CHANGED";
 }
 
 export interface ClearExpiredUndoDataInput {
@@ -247,22 +256,12 @@ export interface IntakeRepository {
   retryFailed(ownerId: string, batchId: string): Promise<IntakeBatch>;
   cancel(ownerId: string, batchId: string): Promise<IntakeBatch>;
   beginUndo(ownerId: string, batchId: string): Promise<IntakeBatch>;
-  loadReversibleRecord(
-    input: ReversibleRecordInput,
-  ): Promise<JsonObject | null>;
-  deleteReversibleRecord(input: ReversibleRecordInput): Promise<void>;
-  loadKnowledgeDocumentForUndo(
-    input: OwnerScopedRecordInput,
-  ): Promise<JsonObject | null>;
-  restoreKnowledgeDocumentCollection(
-    input: RestoreKnowledgeDocumentInput,
-  ): Promise<void>;
-  loadRelationForUndo(
-    input: OwnerScopedRecordInput,
-  ): Promise<JsonObject | null>;
-  deleteRelationForUndo(input: OwnerScopedRecordInput): Promise<void>;
-  markStepUndone(input: UndoStepInput): Promise<void>;
-  markStepUndoConflict(input: UndoConflictStepInput): Promise<void>;
+  undoRecordStep(input: UndoRecordStepInput): Promise<UndoStepResult>;
+  undoArchiveStep(input: UndoArchiveStepInput): Promise<UndoStepResult>;
+  undoRelationStep(input: UndoRelationStepInput): Promise<UndoStepResult>;
+  markReplayedRelationUndone(
+    input: UndoReplayedRelationStepInput,
+  ): Promise<"undone">;
   finishUndo(
     ownerId: string,
     batchId: string,
@@ -540,95 +539,77 @@ export function getIntakeRepository(): IntakeRepository {
       return requireBatch(ownerId, batchId);
     },
 
-    async loadReversibleRecord(input) {
-      const { data, error } = await client
-        .from(input.table)
-        .select("*")
-        .eq("id", input.id)
-        .eq("user_id", input.ownerId)
-        .maybeSingle();
+    async undoRecordStep(input) {
+      assertReversibleTable(input.table);
+      const { data, error } = await client.rpc(
+        "undo_workspace_intake_record_step",
+        {
+          p_user_id: input.ownerId,
+          p_batch_id: input.batchId,
+          p_item_id: input.itemId,
+          p_step_id: input.stepId,
+          p_table_name: input.table,
+          p_record_id: input.recordId,
+          p_expected_snapshot: input.expectedSnapshot,
+          p_expected_fingerprint: input.expectedFingerprint,
+        },
+      );
       throwIfError(error);
-      return data ? asRow(data) : null;
+      return undoStepResult(data);
     },
 
-    async deleteReversibleRecord(input) {
-      const { error } = await client
-        .from(input.table)
-        .delete()
-        .eq("id", input.id)
-        .eq("user_id", input.ownerId);
+    async markReplayedRelationUndone(input) {
+      const { data, error } = await client.rpc(
+        "undo_workspace_intake_replayed_relation_step",
+        {
+          p_user_id: input.ownerId,
+          p_batch_id: input.batchId,
+          p_item_id: input.itemId,
+          p_step_id: input.stepId,
+          p_relation_id: input.relationId,
+          p_expected_snapshot: input.expectedSnapshot,
+          p_expected_fingerprint: input.expectedFingerprint,
+        },
+      );
       throwIfError(error);
+      const result = undoStepResult(data);
+      if (result !== "undone") throw new Error("INVALID_UNDO_RESULT");
+      return result;
     },
 
-    async loadKnowledgeDocumentForUndo(input) {
-      return getKnowledgeItem(input.ownerId, input.id);
+    async undoArchiveStep(input) {
+      const { data, error } = await client.rpc(
+        "undo_workspace_intake_archive_step",
+        {
+          p_user_id: input.ownerId,
+          p_batch_id: input.batchId,
+          p_item_id: input.itemId,
+          p_step_id: input.stepId,
+          p_document_id: input.documentId,
+          p_previous_collection_id: input.previousCollectionId,
+          p_expected_snapshot: input.expectedSnapshot,
+          p_expected_fingerprint: input.expectedFingerprint,
+        },
+      );
+      throwIfError(error);
+      return undoStepResult(data);
     },
 
-    async restoreKnowledgeDocumentCollection(input) {
-      const { error } = await client
-        .from("knowledge_documents")
-        .update({ collection_id: input.collectionId })
-        .eq("id", input.id)
-        .eq("user_id", input.ownerId);
+    async undoRelationStep(input) {
+      const { data, error } = await client.rpc(
+        "undo_workspace_intake_relation_step",
+        {
+          p_user_id: input.ownerId,
+          p_batch_id: input.batchId,
+          p_item_id: input.itemId,
+          p_step_id: input.stepId,
+          p_relation_id: input.relationId,
+          p_expected_snapshot: input.expectedSnapshot,
+          p_expected_fingerprint: input.expectedFingerprint,
+        },
+      );
       throwIfError(error);
-    },
-
-    async loadRelationForUndo(input) {
-      const { data, error } = await client
-        .from("knowledge_relations")
-        .select("*")
-        .eq("id", input.id)
-        .eq("user_id", input.ownerId)
-        .maybeSingle();
-      throwIfError(error);
-      return data ? asRow(data) : null;
-    },
-
-    async deleteRelationForUndo(input) {
-      const { error } = await client
-        .from("knowledge_relations")
-        .delete()
-        .eq("id", input.id)
-        .eq("user_id", input.ownerId);
-      throwIfError(error);
-    },
-
-    async markStepUndone(input) {
-      const { data, error } = await client
-        .from("workspace_action_steps")
-        .update({
-          status: "undone",
-          error_code: null,
-          undone_at: new Date().toISOString(),
-        })
-        .eq("id", input.stepId)
-        .eq("user_id", input.ownerId)
-        .eq("batch_id", input.batchId)
-        .eq("item_id", input.itemId)
-        .in("status", ["completed", "undo_conflict"])
-        .select("id")
-        .maybeSingle();
-      throwIfError(error);
-      if (!data) throw new Error("INTAKE_STEP_NOT_UNDOABLE");
-    },
-
-    async markStepUndoConflict(input) {
-      const { data, error } = await client
-        .from("workspace_action_steps")
-        .update({
-          status: "undo_conflict",
-          error_code: stableErrorCode(input.errorCode),
-          undone_at: null,
-        })
-        .eq("id", input.stepId)
-        .eq("user_id", input.ownerId)
-        .eq("batch_id", input.batchId)
-        .eq("item_id", input.itemId)
-        .in("status", ["completed", "undo_conflict"])
-        .select("id")
-        .maybeSingle();
-      throwIfError(error);
-      if (!data) throw new Error("INTAKE_STEP_NOT_UNDOABLE");
+      return undoStepResult(data);
     },
 
     async finishUndo(ownerId, batchId, status = "undone") {
@@ -768,4 +749,26 @@ function asRows(value: unknown): Record<string, unknown>[] {
 
 function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
+}
+
+function undoStepResult(value: unknown): UndoStepResult {
+  if (
+    value === "undone" ||
+    value === "already_missing" ||
+    value === "conflict"
+  ) {
+    return value;
+  }
+  throw new Error("INVALID_UNDO_RESULT");
+}
+
+function assertReversibleTable(
+  value: unknown,
+): asserts value is ReversibleRecordTable {
+  if (
+    typeof value !== "string" ||
+    !Object.prototype.hasOwnProperty.call(reversibleTables, value)
+  ) {
+    throw new Error("INVALID_INTAKE_INVERSE");
+  }
 }

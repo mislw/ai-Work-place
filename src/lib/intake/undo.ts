@@ -1,12 +1,17 @@
 import type {
   IntakeActionStep,
   IntakeBatch,
+  IntakeItem,
 } from "@/lib/intake/contracts";
-import { fingerprintRecord } from "@/lib/intake/fingerprint";
+import {
+  fingerprintRecord,
+  normalizeFingerprintValue,
+} from "@/lib/intake/fingerprint";
 import type {
   IntakeRepository,
   ReversibleRecordTable,
   UndoStepInput,
+  UndoStepResult,
 } from "@/lib/intake/repository";
 
 const UNDO_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -17,7 +22,45 @@ const recordTableByAction = {
   "calendar.create": "calendar_events",
 } as const satisfies Record<string, ReversibleRecordTable>;
 
+const reversibleRelationActions = new Set([
+  "relation.create:note",
+  "relation.create:todo",
+  "relation.create:calendar",
+]);
+
 type JsonObject = Record<string, unknown>;
+
+type PreparedInverse =
+  | {
+      kind: "record";
+      step: IntakeActionStep;
+      table: ReversibleRecordTable;
+      recordId: string;
+      expectedSnapshot: JsonObject;
+      expectedFingerprint: string;
+    }
+  | {
+      kind: "archive";
+      step: IntakeActionStep;
+      documentId: string;
+      previousCollectionId: string | null;
+      expectedSnapshot: JsonObject;
+      expectedFingerprint: string;
+    }
+  | {
+      kind: "relation";
+      step: IntakeActionStep;
+      relationId: string;
+      expectedSnapshot: JsonObject;
+      expectedFingerprint: string;
+    }
+  | {
+      kind: "replayed_relation";
+      step: IntakeActionStep;
+      relationId: string;
+      expectedSnapshot: JsonObject;
+      expectedFingerprint: string;
+    };
 
 export interface IntakeUndoDependencies {
   repository: IntakeRepository;
@@ -39,6 +82,23 @@ export async function undoIntakeBatch(
     throw new Error("UNDO_WINDOW_EXPIRED");
   }
 
+  const inverses = batch.items
+    .flatMap((item) =>
+      item.steps
+        .filter((step) =>
+          ["completed", "undo_conflict"].includes(step.status),
+        )
+        .map((step) => prepareInverse(item, step)),
+    )
+    .sort(
+      (left, right) =>
+        right.step.sequence - left.step.sequence ||
+        String(right.step.completedAt ?? "").localeCompare(
+          String(left.step.completedAt ?? ""),
+        ) ||
+        right.step.id.localeCompare(left.step.id),
+    );
+
   if (batch.status !== "undoing") {
     if (!["completed", "partial"].includes(batch.status)) {
       throw new Error("INTAKE_BATCH_NOT_UNDOABLE");
@@ -46,23 +106,13 @@ export async function undoIntakeBatch(
     await dependencies.repository.beginUndo(ownerId, batchId);
   }
 
-  const steps = batch.items
-    .flatMap((item) => item.steps)
-    .filter((step) =>
-      ["completed", "undo_conflict"].includes(step.status),
-    )
-    .sort(
-      (left, right) =>
-        right.sequence - left.sequence ||
-        String(right.completedAt ?? "").localeCompare(
-          String(left.completedAt ?? ""),
-        ) ||
-        right.id.localeCompare(left.id),
-    );
-
   let hasConflict = false;
-  for (const step of steps) {
-    const outcome = await undoStep(ownerId, step, dependencies.repository);
+  for (const inverse of inverses) {
+    const outcome = await applyInverse(
+      ownerId,
+      inverse,
+      dependencies.repository,
+    );
     if (outcome === "conflict") hasConflict = true;
   }
 
@@ -73,91 +123,147 @@ export async function undoIntakeBatch(
   );
 }
 
-async function undoStep(
+async function applyInverse(
   ownerId: string,
-  step: IntakeActionStep,
+  inverse: PreparedInverse,
   repository: IntakeRepository,
-): Promise<"undone" | "conflict"> {
-  const mutation = stepMutation(ownerId, step);
+): Promise<UndoStepResult | "undone"> {
+  const mutation = stepMutation(ownerId, inverse.step);
+  if (inverse.kind === "replayed_relation") {
+    return repository.markReplayedRelationUndone({
+      ...mutation,
+      relationId: inverse.relationId,
+      expectedSnapshot: inverse.expectedSnapshot,
+      expectedFingerprint: inverse.expectedFingerprint,
+    });
+  }
+  if (inverse.kind === "record") {
+    return repository.undoRecordStep({
+      ...mutation,
+      table: inverse.table,
+      recordId: inverse.recordId,
+      expectedSnapshot: inverse.expectedSnapshot,
+      expectedFingerprint: inverse.expectedFingerprint,
+    });
+  }
+  if (inverse.kind === "archive") {
+    return repository.undoArchiveStep({
+      ...mutation,
+      documentId: inverse.documentId,
+      previousCollectionId: inverse.previousCollectionId,
+      expectedSnapshot: inverse.expectedSnapshot,
+      expectedFingerprint: inverse.expectedFingerprint,
+    });
+  }
+  return repository.undoRelationStep({
+    ...mutation,
+    relationId: inverse.relationId,
+    expectedSnapshot: inverse.expectedSnapshot,
+    expectedFingerprint: inverse.expectedFingerprint,
+  });
+}
+
+function prepareInverse(
+  item: IntakeItem,
+  step: IntakeActionStep,
+): PreparedInverse {
+  const forward = requireRecord(step.forwardResult);
+  if (step.inverseAction === null && step.inverseInput === null) {
+    if (
+      reversibleRelationActions.has(step.actionName) &&
+      forward.replayed === true
+    ) {
+      const relationId = requireString(forward.id);
+      const expected = readExpectedState(forward, step);
+      requireExpectedTargetId(expected.snapshot, relationId);
+      return {
+        kind: "replayed_relation",
+        step,
+        relationId,
+        expectedSnapshot: expected.snapshot,
+        expectedFingerprint: expected.fingerprint,
+      };
+    }
+    throw new Error("INVALID_INTAKE_INVERSE");
+  }
   if (!step.inverseAction || !step.inverseInput) {
-    await repository.markStepUndone(mutation);
-    return "undone";
+    throw new Error("INVALID_INTAKE_INVERSE");
   }
 
+  const expected = readExpectedState(forward, step);
   if (step.inverseAction === "record.delete") {
     const table = recordTable(step.actionName);
-    const id = exactReceiptId(step);
-    const current = await repository.loadReversibleRecord({
-      ownerId,
+    if (step.inverseInput.table !== table) {
+      throw new Error("INVALID_INTAKE_INVERSE");
+    }
+    const recordId = exactReceiptId(forward, step.inverseInput);
+    requireExpectedTargetId(expected.snapshot, recordId);
+    return {
+      kind: "record",
+      step,
       table,
-      id,
-    });
-    if (!current) return markUndone(repository, mutation);
-    if (!matchesFingerprint(current, step.conflictFingerprint)) {
-      return markConflict(repository, mutation);
-    }
-    await repository.deleteReversibleRecord({ ownerId, table, id });
-    return markUndone(repository, mutation);
+      recordId,
+      expectedSnapshot: expected.snapshot,
+      expectedFingerprint: expected.fingerprint,
+    };
   }
-
   if (step.inverseAction === "archive.restore") {
-    const id = requireString(step.inverseInput.documentId);
-    const current = await repository.loadKnowledgeDocumentForUndo({
-      ownerId,
-      id,
-    });
-    if (!current) return markUndone(repository, mutation);
-    if (!matchesFingerprint(current, step.conflictFingerprint)) {
-      return markConflict(repository, mutation);
+    if (step.actionName !== "archive") {
+      throw new Error("INVALID_INTAKE_INVERSE");
     }
-    await repository.restoreKnowledgeDocumentCollection({
-      ownerId,
-      id,
-      collectionId: readNullableString(
+    const documentId = requireString(step.inverseInput.documentId);
+    if (documentId !== item.documentId) {
+      throw new Error("INVALID_INTAKE_INVERSE");
+    }
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        step.inverseInput,
+        "previousCollectionId",
+      )
+    ) {
+      throw new Error("INVALID_INTAKE_INVERSE");
+    }
+    requireExpectedTargetId(expected.snapshot, documentId);
+    return {
+      kind: "archive",
+      step,
+      documentId,
+      previousCollectionId: readNullableString(
         step.inverseInput.previousCollectionId,
       ),
-    });
-    return markUndone(repository, mutation);
+      expectedSnapshot: expected.snapshot,
+      expectedFingerprint: expected.fingerprint,
+    };
   }
-
-  if (step.inverseAction === "relation.delete") {
-    const id = exactReceiptId(step);
-    const current = await repository.loadRelationForUndo({ ownerId, id });
-    if (!current) return markUndone(repository, mutation);
-    if (!matchesFingerprint(current, step.conflictFingerprint)) {
-      return markConflict(repository, mutation);
-    }
-    await repository.deleteRelationForUndo({ ownerId, id });
-    return markUndone(repository, mutation);
+  if (
+    step.inverseAction === "relation.delete" &&
+    reversibleRelationActions.has(step.actionName) &&
+    forward.replayed === false
+  ) {
+    const relationId = exactReceiptId(forward, step.inverseInput);
+    requireExpectedTargetId(expected.snapshot, relationId);
+    return {
+      kind: "relation",
+      step,
+      relationId,
+      expectedSnapshot: expected.snapshot,
+      expectedFingerprint: expected.fingerprint,
+    };
   }
-
   throw new Error("INVALID_INTAKE_INVERSE");
 }
 
-async function markUndone(
-  repository: IntakeRepository,
-  input: UndoStepInput,
-): Promise<"undone"> {
-  await repository.markStepUndone(input);
-  return "undone";
-}
-
-async function markConflict(
-  repository: IntakeRepository,
-  input: UndoStepInput,
-): Promise<"conflict"> {
-  await repository.markStepUndoConflict({
-    ...input,
-    errorCode: "UNDO_RECORD_CHANGED",
-  });
-  return "conflict";
-}
-
-function matchesFingerprint(
-  current: JsonObject,
-  expected: string | null,
-): boolean {
-  return expected !== null && fingerprintRecord(current) === expected;
+function readExpectedState(
+  forward: JsonObject,
+  step: IntakeActionStep,
+): { snapshot: JsonObject; fingerprint: string } {
+  const expected = requireRecord(forward.postActionSnapshot);
+  const normalized = requireRecord(normalizeFingerprintValue(expected));
+  const fingerprint = requireString(step.conflictFingerprint);
+  if (fingerprintRecord(normalized) !== fingerprint) {
+    throw new Error("INVALID_INTAKE_INVERSE");
+  }
+  return { snapshot: normalized, fingerprint };
 }
 
 function recordTable(actionName: string): ReversibleRecordTable {
@@ -169,11 +275,23 @@ function recordTable(actionName: string): ReversibleRecordTable {
   throw new Error("INVALID_INTAKE_INVERSE");
 }
 
-function exactReceiptId(step: IntakeActionStep): string {
-  const forwardId = requireString(requireRecord(step.forwardResult).id);
-  const inverseId = requireString(step.inverseInput?.id);
+function exactReceiptId(
+  forward: JsonObject,
+  inverse: JsonObject,
+): string {
+  const forwardId = requireString(forward.id);
+  const inverseId = requireString(inverse.id);
   if (forwardId !== inverseId) throw new Error("INVALID_INTAKE_INVERSE");
   return forwardId;
+}
+
+function requireExpectedTargetId(
+  expectedSnapshot: JsonObject,
+  targetId: string,
+): void {
+  if (requireString(expectedSnapshot.id) !== targetId) {
+    throw new Error("INVALID_INTAKE_INVERSE");
+  }
 }
 
 function stepMutation(ownerId: string, step: IntakeActionStep): UndoStepInput {

@@ -380,6 +380,152 @@ describe("workspace intake database foundation", () => {
     expect(correctionFunction).not.toMatch(/exception\s+when/i);
   });
 
+  it("atomically compares and undoes owner-scoped record, archive, and relation steps", () => {
+    const recordUndo = extractSqlDefinition(
+      sql,
+      "create or replace function public.undo_workspace_intake_record_step",
+      "$$;",
+    );
+    const archiveUndo = extractSqlDefinition(
+      sql,
+      "create or replace function public.undo_workspace_intake_archive_step",
+      "$$;",
+    );
+    const relationUndo = extractSqlDefinition(
+      sql,
+      "create or replace function public.undo_workspace_intake_relation_step",
+      "$$;",
+    );
+    const replayedRelationUndo = extractSqlDefinition(
+      sql,
+      "create or replace function public.undo_workspace_intake_replayed_relation_step",
+      "$$;",
+    );
+
+    for (const definition of [recordUndo, archiveUndo, relationUndo]) {
+      expect(definition).toMatch(
+        /from public\.workspace_action_steps[\s\S]*?id = p_step_id[\s\S]*?user_id = p_user_id[\s\S]*?batch_id = p_batch_id[\s\S]*?item_id = p_item_id[\s\S]*?for update/,
+      );
+      expect(definition).toContain("p_expected_snapshot");
+      expect(definition).toContain("p_expected_fingerprint");
+      expect(definition).toMatch(
+        /v_step\.conflict_fingerprint\s+is distinct from p_expected_fingerprint/,
+      );
+      expect(definition).toContain("status = 'undo_conflict'");
+      expect(definition).toContain("error_code = 'UNDO_RECORD_CHANGED'");
+      expect(definition).toContain("status = 'undone'");
+      expect(definition).toContain("return 'already_missing'");
+      expect(definition).toContain("return 'conflict'");
+      expect(definition).toContain("return 'undone'");
+      expect(definition).toContain(
+        "jsonb_typeof(p_expected_snapshot) is distinct from 'object'",
+      );
+    }
+
+    expect(recordUndo).toContain(
+      "v_step.action_name is distinct from v_expected_action",
+    );
+    expect(recordUndo).toContain(
+      "v_step.inverse_action is distinct from 'record.delete'",
+    );
+    expect(recordUndo).toContain(
+      "v_step.inverse_input ->> 'table' is distinct from p_table_name",
+    );
+    expect(recordUndo).toContain(
+      "v_step.inverse_input ->> 'id' is distinct from p_record_id::text",
+    );
+    expect(recordUndo).toContain(
+      "v_step.forward_result ->> 'id' is distinct from p_record_id::text",
+    );
+    expect(recordUndo).toMatch(
+      /p_table_name not in \('notes', 'todos', 'calendar_events'\)/,
+    );
+    expect(recordUndo).toMatch(
+      /where id = p_record_id[\s\S]*?user_id = p_user_id[\s\S]*?for update/,
+    );
+    expect(recordUndo).toContain("p_expected_snapshot");
+    expect(recordUndo).toMatch(
+      /delete from public\.(notes|todos|calendar_events)/,
+    );
+    expect(recordUndo).toContain(
+      "public.normalize_intake_conflict_snapshot(to_jsonb(",
+    );
+
+    expect(archiveUndo).toContain(
+      "v_step.action_name is distinct from 'archive'",
+    );
+    expect(archiveUndo).toContain(
+      "v_step.inverse_action is distinct from 'archive.restore'",
+    );
+    expect(archiveUndo).toContain(
+      "not (v_step.inverse_input ? 'previousCollectionId')",
+    );
+    expect(archiveUndo).toContain(
+      "v_step.forward_result -> 'postActionSnapshot' ->> 'id'",
+    );
+    expect(archiveUndo).toMatch(
+      /from public\.knowledge_documents[\s\S]*?id = p_document_id[\s\S]*?user_id = p_user_id[\s\S]*?for update/,
+    );
+    expect(archiveUndo).toMatch(
+      /update public\.knowledge_documents[\s\S]*?collection_id = p_previous_collection_id[\s\S]*?id = p_document_id[\s\S]*?user_id = p_user_id/,
+    );
+
+    expect(relationUndo).toContain(
+      "v_step.inverse_action is distinct from 'relation.delete'",
+    );
+    expect(relationUndo).toMatch(
+      /v_step\.action_name not in \(\s*'relation\.create:note',\s*'relation\.create:todo',\s*'relation\.create:calendar'\s*\)/,
+    );
+    expect(relationUndo).toMatch(
+      /v_step\.inverse_input ->> 'id'\s+is distinct from p_relation_id::text/,
+    );
+    expect(relationUndo).toContain(
+      "v_step.forward_result ->> 'replayed' is distinct from 'false'",
+    );
+    expect(relationUndo).toMatch(
+      /from public\.knowledge_relations[\s\S]*?id = p_relation_id[\s\S]*?user_id = p_user_id[\s\S]*?for update/,
+    );
+    expect(relationUndo).toMatch(
+      /delete from public\.knowledge_relations[\s\S]*?id = p_relation_id[\s\S]*?user_id = p_user_id/,
+    );
+    expect(replayedRelationUndo).toMatch(
+      /from public\.workspace_action_steps[\s\S]*?id = p_step_id[\s\S]*?user_id = p_user_id[\s\S]*?batch_id = p_batch_id[\s\S]*?item_id = p_item_id[\s\S]*?for update/,
+    );
+    expect(replayedRelationUndo).toMatch(
+      /action_name not in \(\s*'relation\.create:note',\s*'relation\.create:todo',\s*'relation\.create:calendar'\s*\)[\s\S]*?inverse_action is not null[\s\S]*?inverse_input is not null[\s\S]*?forward_result ->> 'replayed' is distinct from 'true'/,
+    );
+    expect(replayedRelationUndo).toMatch(
+      /v_step\.forward_result ->> 'id'\s+is distinct from p_relation_id::text/,
+    );
+    expect(replayedRelationUndo).toContain("p_relation_id");
+    expect(replayedRelationUndo).toContain("p_expected_snapshot");
+    expect(replayedRelationUndo).toContain("p_expected_fingerprint");
+    expect(replayedRelationUndo).toMatch(
+      /v_step\.conflict_fingerprint\s+is distinct from p_expected_fingerprint/,
+    );
+    expect(replayedRelationUndo).toContain(
+      "v_step.forward_result -> 'postActionSnapshot' ->> 'id'",
+    );
+    expect(replayedRelationUndo).toContain("status = 'undone'");
+  });
+
+  it("recursively removes volatile fields from atomic undo snapshots", () => {
+    const normalizeSnapshot = extractSqlDefinition(
+      sql,
+      "create or replace function public.normalize_intake_conflict_snapshot",
+      "$$;",
+    );
+
+    expect(normalizeSnapshot).toContain("jsonb_each(p_value)");
+    expect(normalizeSnapshot).toContain("jsonb_array_elements(p_value)");
+    expect(normalizeSnapshot).toContain(
+      "key not in ('updated_at', 'last_edited_at', 'completed_at')",
+    );
+    expect(normalizeSnapshot).toContain(
+      "public.normalize_intake_conflict_snapshot(value)",
+    );
+  });
+
   it("restricts all intake mutation RPCs to service role", () => {
     for (const signature of [
       "attach_workspace_intake_correction_run(uuid, uuid, text, text, integer)",
@@ -389,6 +535,10 @@ describe("workspace intake database foundation", () => {
       "replace_workspace_intake_pending_steps(uuid, uuid, uuid, text, jsonb)",
       "complete_workspace_intake_step(uuid, uuid, uuid, text, jsonb, text, jsonb, text)",
       "fail_workspace_intake_step(uuid, uuid, uuid, text, text)",
+      "undo_workspace_intake_record_step(uuid, uuid, uuid, uuid, text, uuid, jsonb, text)",
+      "undo_workspace_intake_archive_step(uuid, uuid, uuid, uuid, uuid, uuid, jsonb, text)",
+      "undo_workspace_intake_relation_step(uuid, uuid, uuid, uuid, uuid, jsonb, text)",
+      "undo_workspace_intake_replayed_relation_step(uuid, uuid, uuid, uuid, uuid, jsonb, text)",
     ]) {
       expect(sql).toContain(
         `revoke all on function public.${signature} from public, anon, authenticated`,

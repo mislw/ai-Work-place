@@ -609,6 +609,179 @@ describe("owner-scoped intake repository", () => {
       ]),
     });
   });
+
+  it("uses one owner- and exact-id-scoped RPC for atomic record undo", async () => {
+    queryResults.push({ data: "undone", error: null });
+    const expectedSnapshot = {
+      id: "record-1",
+      title: "Created by intake",
+    };
+
+    const result = await getIntakeRepository().undoRecordStep({
+      ownerId: "owner-1",
+      batchId: "batch-1",
+      itemId: "item-1",
+      stepId: "step-1",
+      table: "todos",
+      recordId: "record-1",
+      expectedSnapshot,
+      expectedFingerprint: "sha256:record",
+    });
+
+    expect(result).toBe("undone");
+    expect(rpc).toHaveBeenCalledWith("undo_workspace_intake_record_step", {
+      p_user_id: "owner-1",
+      p_batch_id: "batch-1",
+      p_item_id: "item-1",
+      p_step_id: "step-1",
+      p_table_name: "todos",
+      p_record_id: "record-1",
+      p_expected_snapshot: expectedSnapshot,
+      p_expected_fingerprint: "sha256:record",
+    });
+    expect(queryRecords).toEqual([]);
+  });
+
+  it("uses one owner- and exact-id-scoped RPC for atomic archive undo", async () => {
+    queryResults.push({ data: "already_missing", error: null });
+    const expectedSnapshot = {
+      id: "document-1",
+      collection_id: "collection-new",
+    };
+
+    const result = await getIntakeRepository().undoArchiveStep({
+      ownerId: "owner-1",
+      batchId: "batch-1",
+      itemId: "item-1",
+      stepId: "step-1",
+      documentId: "document-1",
+      previousCollectionId: "collection-old",
+      expectedSnapshot,
+      expectedFingerprint: "sha256:archive",
+    });
+
+    expect(result).toBe("already_missing");
+    expect(rpc).toHaveBeenCalledWith("undo_workspace_intake_archive_step", {
+      p_user_id: "owner-1",
+      p_batch_id: "batch-1",
+      p_item_id: "item-1",
+      p_step_id: "step-1",
+      p_document_id: "document-1",
+      p_previous_collection_id: "collection-old",
+      p_expected_snapshot: expectedSnapshot,
+      p_expected_fingerprint: "sha256:archive",
+    });
+    expect(queryRecords).toEqual([]);
+  });
+
+  it("uses one owner- and exact-id-scoped RPC for atomic relation undo", async () => {
+    queryResults.push({ data: "conflict", error: null });
+    const expectedSnapshot = {
+      id: "relation-1",
+      source_id: "document-1",
+      target_id: "todo-1",
+    };
+
+    const result = await getIntakeRepository().undoRelationStep({
+      ownerId: "owner-1",
+      batchId: "batch-1",
+      itemId: "item-1",
+      stepId: "step-1",
+      relationId: "relation-1",
+      expectedSnapshot,
+      expectedFingerprint: "sha256:relation",
+    });
+
+    expect(result).toBe("conflict");
+    expect(rpc).toHaveBeenCalledWith("undo_workspace_intake_relation_step", {
+      p_user_id: "owner-1",
+      p_batch_id: "batch-1",
+      p_item_id: "item-1",
+      p_step_id: "step-1",
+      p_relation_id: "relation-1",
+      p_expected_snapshot: expectedSnapshot,
+      p_expected_fingerprint: "sha256:relation",
+    });
+    expect(queryRecords).toEqual([]);
+  });
+
+  it("atomically completes only a confirmed replayed relation receipt", async () => {
+    queryResults.push({ data: "undone", error: null });
+
+    const expectedSnapshot = {
+      id: "relation-1",
+      source_id: "document-1",
+      target_id: "todo-1",
+    };
+    const result = await getIntakeRepository().markReplayedRelationUndone({
+      ownerId: "owner-1",
+      batchId: "batch-1",
+      itemId: "item-1",
+      stepId: "step-1",
+      relationId: "relation-1",
+      expectedSnapshot,
+      expectedFingerprint: "sha256:replayed-relation",
+    });
+
+    expect(result).toBe("undone");
+    expect(rpc).toHaveBeenCalledWith(
+      "undo_workspace_intake_replayed_relation_step",
+      {
+        p_user_id: "owner-1",
+        p_batch_id: "batch-1",
+        p_item_id: "item-1",
+        p_step_id: "step-1",
+        p_relation_id: "relation-1",
+        p_expected_snapshot: expectedSnapshot,
+        p_expected_fingerprint: "sha256:replayed-relation",
+      },
+    );
+    expect(queryRecords).toEqual([]);
+  });
+
+  it("rejects a non-allowlisted record table before any RPC or query", async () => {
+    const repository = getIntakeRepository();
+
+    await expect(
+      repository.undoRecordStep({
+        ownerId: "owner-1",
+        batchId: "batch-1",
+        itemId: "item-1",
+        stepId: "step-1",
+        table: "profiles" as never,
+        recordId: "record-1",
+        expectedSnapshot: { id: "record-1" },
+        expectedFingerprint: "sha256:record",
+      }),
+    ).rejects.toThrow("INVALID_INTAKE_INVERSE");
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(queryRecords).toEqual([]);
+  });
+
+  it("clears only inverse payload fields for one owner-scoped batch", async () => {
+    queryResults.push({ data: null, error: null });
+
+    await getIntakeRepository().clearExpiredUndoData({
+      ownerId: "owner-1",
+      batchId: "batch-1",
+    });
+
+    expect(queryRecords).toEqual([
+      {
+        table: "workspace_action_steps",
+        operation: "update",
+        payload: {
+          inverse_input: null,
+          conflict_fingerprint: null,
+        },
+        filters: [
+          { kind: "eq", column: "user_id", value: "owner-1" },
+          { kind: "eq", column: "batch_id", value: "batch-1" },
+        ],
+      },
+    ]);
+  });
 });
 
 function createQuery(table: string) {
