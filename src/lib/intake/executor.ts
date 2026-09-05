@@ -324,7 +324,10 @@ function buildPlannedSteps(
     const planned = steps[step.sequence];
     if (
       step.status === "completed" &&
-      (!planned || planned.actionName !== step.actionName)
+      (!planned ||
+        planned.actionName !== step.actionName ||
+        fingerprintRecord(planned.forwardInput) !==
+          fingerprintRecord(step.forwardInput))
     ) {
       throw new Error("INTAKE_STEP_PLAN_MISMATCH");
     }

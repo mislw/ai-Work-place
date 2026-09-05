@@ -347,6 +347,53 @@ describe("executeIntakePlan", () => {
     });
   });
 
+  it("recovers a persisted failed step after lease reclaim without retry", async () => {
+    const harness = createHarness();
+    let attempts = 0;
+    harness.executeAction.mockImplementation(
+      async (_ownerId, action, _requestId) => {
+        harness.events.push(action.action);
+        harness.callOrder.push(action.action);
+        attempts += 1;
+        if (attempts === 1) throw new Error("write failed");
+        return {
+          result: createdRecord(action.action, action.input),
+          replayed: false,
+        };
+      },
+    );
+    harness.setItemDecision.mockRejectedValueOnce(
+      new Error("process exited after failed receipt"),
+    );
+    const input = createInput([
+      { kind: "todo.create", input: { title: "Resume after crash" } },
+    ]);
+
+    await expect(
+      executeIntakePlan(input, harness.dependencies),
+    ).rejects.toThrow("process exited after failed receipt");
+    expect(completedStep(harness.steps, "todo.create")).toMatchObject({
+      status: "failed",
+      errorCode: "EXECUTION_FAILED",
+    });
+
+    harness.callOrder.length = 0;
+    await executeIntakePlan(
+      { ...input, workerId: "worker-2" },
+      harness.dependencies,
+    );
+
+    expect(harness.callOrder).toEqual([
+      "todo.create",
+      "relation.create:todo",
+    ]);
+    expect(harness.steps.every((step) => step.status === "completed")).toBe(true);
+    expect(harness.decisions.at(-1)).toMatchObject({
+      workerId: "worker-2",
+      status: "completed",
+    });
+  });
+
   it("preserves a null archive origin across a failed write and retry", async () => {
     const harness = createHarness();
     let collectionId: string | null = null;
@@ -390,6 +437,51 @@ describe("executeIntakePlan", () => {
         previousCollectionId: null,
       },
     });
+  });
+
+  it("rejects changed input for a completed action before any new write", async () => {
+    const harness = createHarness();
+    await executeIntakePlan(
+      createInput([
+        { kind: "note.create", input: { title: "Original title" } },
+      ]),
+      harness.dependencies,
+    );
+    harness.callOrder.length = 0;
+    harness.events.length = 0;
+
+    await expect(
+      executeIntakePlan(
+        createInput([
+          { kind: "note.create", input: { title: "Changed title" } },
+        ]),
+        harness.dependencies,
+      ),
+    ).rejects.toThrow("INTAKE_STEP_PLAN_MISMATCH");
+
+    expect(harness.replacePendingSteps).toHaveBeenCalledTimes(1);
+    expect(harness.callOrder).toEqual([]);
+  });
+
+  it("rejects changed input for a completed relation before any new write", async () => {
+    const harness = createHarness();
+    const input = createInput([
+      { kind: "note.create", input: { title: "Stable source" } },
+    ]);
+    await executeIntakePlan(input, harness.dependencies);
+    completedStep(
+      harness.steps,
+      "relation.create:note",
+    ).forwardInput.targetType = "todo";
+    harness.callOrder.length = 0;
+    harness.events.length = 0;
+
+    await expect(
+      executeIntakePlan(input, harness.dependencies),
+    ).rejects.toThrow("INTAKE_STEP_PLAN_MISMATCH");
+
+    expect(harness.replacePendingSteps).toHaveBeenCalledTimes(1);
+    expect(harness.callOrder).toEqual([]);
   });
 
   it("checks cancellation after pending steps are persisted and before business writes", async () => {
@@ -536,9 +628,20 @@ function createHarness() {
     }>,
   ) {
     for (let index = steps.length - 1; index >= 0; index -= 1) {
-      if (steps[index]!.status === "pending") steps.splice(index, 1);
+      if (["pending", "failed"].includes(steps[index]!.status)) {
+        steps.splice(index, 1);
+      }
     }
     for (const step of pending) {
+      if (
+        steps.some(
+          (existing) =>
+            existing.id === step.id ||
+            existing.sequence === step.sequence,
+        )
+      ) {
+        throw new Error("TEST_STEP_UNIQUE_CONFLICT");
+      }
       stepCounter += 1;
       steps.push({
         id: step.id ?? `step-${stepCounter}`,

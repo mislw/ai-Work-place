@@ -1014,16 +1014,37 @@ begin
   select batch_id into v_batch_id
   from public.workspace_intake_items
   where id = p_item_id
-    and user_id = p_user_id
-    and lease_owner = p_worker_id
-    and status in ('orchestrating', 'executing')
-  for update;
+    and user_id = p_user_id;
 
   if not found then
     raise exception 'INTAKE_LEASE_LOST';
   end if;
   if p_status not in ('executing', 'completed', 'partial', 'failed') then
     raise exception 'INVALID_INTAKE_ITEM_STATUS';
+  end if;
+
+  perform 1
+  from public.workspace_intake_batches
+  where id = v_batch_id
+    and user_id = p_user_id
+    and status in ('processing', 'orchestrating', 'executing')
+  for update;
+
+  if not found then
+    raise exception 'INTAKE_LEASE_LOST';
+  end if;
+
+  perform 1
+  from public.workspace_intake_items
+  where id = p_item_id
+    and user_id = p_user_id
+    and batch_id = v_batch_id
+    and lease_owner = p_worker_id
+    and status in ('orchestrating', 'executing')
+  for update;
+
+  if not found then
+    raise exception 'INTAKE_LEASE_LOST';
   end if;
 
   update public.workspace_intake_items
@@ -1228,7 +1249,7 @@ begin
   where user_id = p_user_id
     and batch_id = p_batch_id
     and item_id = p_item_id
-    and status = 'pending';
+    and status in ('pending', 'failed');
 
   for v_step in select value from jsonb_array_elements(p_steps)
   loop

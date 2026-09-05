@@ -373,6 +373,47 @@ describe("owner-scoped intake repository", () => {
     expect(queryRecords).toEqual([]);
   });
 
+  it("replaces persisted failed steps after lease reclaim without retrying the batch", async () => {
+    queryResults.push({ data: true, error: null });
+
+    await getIntakeRepository().replacePendingSteps({
+      ownerId: "owner-1",
+      batchId: "batch-1",
+      itemId: "item-1",
+      workerId: "worker-2",
+      steps: [
+        {
+          id: "step-failed",
+          sequence: 0,
+          actionName: "todo.create",
+          forwardInput: { title: "Resume after crash" },
+          inverseAction: null,
+          inverseInput: null,
+          conflictFingerprint: null,
+          confidence: 0.9,
+        },
+      ],
+    });
+
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith(
+      "replace_workspace_intake_pending_steps",
+      expect.objectContaining({
+        p_worker_id: "worker-2",
+        p_steps: [
+          expect.objectContaining({
+            id: "step-failed",
+            sequence: 0,
+          }),
+        ],
+      }),
+    );
+    expect(rpc).not.toHaveBeenCalledWith(
+      "retry_workspace_intake_batch",
+      expect.anything(),
+    );
+  });
+
   it("journals completed and failed steps through lease-guarded transaction RPCs", async () => {
     queryResults.push({ data: true, error: null }, { data: true, error: null });
     const repository = getIntakeRepository();

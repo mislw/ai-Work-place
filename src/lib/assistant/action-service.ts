@@ -34,6 +34,7 @@ export async function executeIdempotentWorkbenchAction(
       .from("assistant_action_receipts")
       .select("status, result")
       .eq("request_id", requestId)
+      .eq("user_id", userId)
       .maybeSingle();
     if (existing.error) throw new Error(existing.error.message);
     if (existing.data?.status === "completed") {
@@ -49,13 +50,15 @@ export async function executeIdempotentWorkbenchAction(
     await supabase
       .from("assistant_action_receipts")
       .delete()
-      .eq("request_id", requestId);
+      .eq("request_id", requestId)
+      .eq("user_id", userId);
     throw error;
   }
 
   await supabase
     .from("assistant_action_receipts")
     .update({ status: "completed", result })
-    .eq("request_id", requestId);
+    .eq("request_id", requestId)
+    .eq("user_id", userId);
   return { result, replayed: false };
 }

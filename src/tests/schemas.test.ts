@@ -275,6 +275,40 @@ describe("workspace intake database foundation", () => {
     );
   });
 
+  it("locks the active batch before the leased item when applying a decision", () => {
+    const decisionFunction = extractSqlDefinition(
+      sql,
+      "create or replace function public.set_workspace_intake_item_decision",
+      "$$;",
+    );
+    const batchIdLookup = decisionFunction.indexOf(
+      "select batch_id into v_batch_id",
+    );
+    const batchLock = decisionFunction.indexOf(
+      "from public.workspace_intake_batches",
+      batchIdLookup,
+    );
+    const itemLock = decisionFunction.indexOf(
+      "from public.workspace_intake_items",
+      batchLock,
+    );
+    const itemUpdate = decisionFunction.indexOf(
+      "update public.workspace_intake_items",
+      itemLock,
+    );
+
+    expect(batchIdLookup).toBeGreaterThanOrEqual(0);
+    expect(batchLock).toBeGreaterThan(batchIdLookup);
+    expect(itemLock).toBeGreaterThan(batchLock);
+    expect(itemUpdate).toBeGreaterThan(itemLock);
+    expect(decisionFunction).toMatch(
+      /perform 1[\s\S]*?from public\.workspace_intake_batches[\s\S]*?id = v_batch_id[\s\S]*?user_id = p_user_id[\s\S]*?status in \('processing', 'orchestrating', 'executing'\)[\s\S]*?for update/,
+    );
+    expect(decisionFunction).toMatch(
+      /perform 1[\s\S]*?from public\.workspace_intake_items[\s\S]*?id = p_item_id[\s\S]*?user_id = p_user_id[\s\S]*?batch_id = v_batch_id[\s\S]*?lease_owner = p_worker_id[\s\S]*?status in \('orchestrating', 'executing'\)[\s\S]*?for update/,
+    );
+  });
+
   it("defines transaction-scoped lease guards for every step mutation", () => {
     const replaceFunction = extractSqlDefinition(
       sql,
@@ -312,7 +346,10 @@ describe("workspace intake database foundation", () => {
     expect(deletePosition).toBeGreaterThanOrEqual(0);
     expect(insertPosition).toBeGreaterThan(deletePosition);
     expect(replaceFunction).toMatch(
-      /delete from public\.workspace_action_steps[\s\S]*?user_id = p_user_id[\s\S]*?item_id = p_item_id[\s\S]*?status = 'pending'/,
+      /delete from public\.workspace_action_steps[\s\S]*?user_id = p_user_id[\s\S]*?item_id = p_item_id[\s\S]*?status in \('pending', 'failed'\)/,
+    );
+    expect(replaceFunction).not.toMatch(
+      /delete from public\.workspace_action_steps[\s\S]*?status(?:\s*=|\s+in)[^;]*completed/,
     );
     expect(replaceFunction).not.toMatch(/exception\s+when/i);
 
