@@ -1648,6 +1648,20 @@ begin
   end if;
   if jsonb_typeof(v_step.inverse_input) is distinct from 'object'
     or jsonb_typeof(v_step.forward_result) is distinct from 'object'
+    or jsonb_typeof(v_step.forward_result -> 'postActionSnapshot')
+      is distinct from 'object'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'id'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'collection_id'
+    ) is distinct from 'string'
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'collection_id' = ''
+    or jsonb_typeof(v_step.forward_result -> 'collectionId')
+      is distinct from 'string'
+    or v_step.forward_result ->> 'collectionId' = ''
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'collection_id'
+      is distinct from v_step.forward_result ->> 'collectionId'
     or v_step.conflict_fingerprint
       is distinct from p_expected_fingerprint
     or v_step.action_name is distinct from 'archive'
@@ -1763,6 +1777,51 @@ begin
   end if;
   if jsonb_typeof(v_step.inverse_input) is distinct from 'object'
     or jsonb_typeof(v_step.forward_result) is distinct from 'object'
+    or jsonb_typeof(v_step.forward_result -> 'postActionSnapshot')
+      is distinct from 'object'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'id'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'source_type'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'source_id'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'target_type'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'target_id'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'relation_type'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'creator'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+    ) is distinct from 'number'
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'source_type'
+      is distinct from 'knowledge_document'
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'source_id' = ''
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'target_type'
+      is distinct from case v_step.action_name
+        when 'relation.create:note' then 'note'
+        when 'relation.create:todo' then 'todo'
+        when 'relation.create:calendar' then 'calendar_event'
+        else null
+      end
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'target_id' = ''
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'relation_type'
+      is distinct from 'source_of'
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'creator'
+      is distinct from 'assistant'
+    or v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+      < '0'::jsonb
+    or v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+      > '1'::jsonb
     or v_step.conflict_fingerprint
       is distinct from p_expected_fingerprint
     or v_step.action_name is null
@@ -1781,6 +1840,18 @@ begin
       is distinct from p_relation_id::text
     or v_step.forward_result -> 'postActionSnapshot'
       is distinct from p_expected_snapshot then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  perform 1
+  from public.workspace_intake_items
+  where id = p_item_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and document_id::text =
+      v_step.forward_result -> 'postActionSnapshot' ->> 'source_id'
+  for update;
+  if not found then
     raise exception 'INVALID_INTAKE_INVERSE';
   end if;
 
@@ -1877,6 +1948,51 @@ begin
     raise exception 'INTAKE_STEP_NOT_UNDOABLE';
   end if;
   if jsonb_typeof(v_step.forward_result) is distinct from 'object'
+    or jsonb_typeof(v_step.forward_result -> 'postActionSnapshot')
+      is distinct from 'object'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'id'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'source_type'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'source_id'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'target_type'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'target_id'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'relation_type'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'creator'
+    ) is distinct from 'string'
+    or jsonb_typeof(
+      v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+    ) is distinct from 'number'
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'source_type'
+      is distinct from 'knowledge_document'
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'source_id' = ''
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'target_type'
+      is distinct from case v_step.action_name
+        when 'relation.create:note' then 'note'
+        when 'relation.create:todo' then 'todo'
+        when 'relation.create:calendar' then 'calendar_event'
+        else null
+      end
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'target_id' = ''
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'relation_type'
+      is distinct from 'source_of'
+    or v_step.forward_result -> 'postActionSnapshot' ->> 'creator'
+      is distinct from 'assistant'
+    or v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+      < '0'::jsonb
+    or v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+      > '1'::jsonb
     or v_step.conflict_fingerprint
       is distinct from p_expected_fingerprint
     or v_step.action_name is null
@@ -1896,6 +2012,18 @@ begin
       is distinct from p_relation_id::text
     or v_step.forward_result -> 'postActionSnapshot'
       is distinct from p_expected_snapshot then
+    raise exception 'INVALID_INTAKE_INVERSE';
+  end if;
+
+  perform 1
+  from public.workspace_intake_items
+  where id = p_item_id
+    and user_id = p_user_id
+    and batch_id = p_batch_id
+    and document_id::text =
+      v_step.forward_result -> 'postActionSnapshot' ->> 'source_id'
+  for update;
+  if not found then
     raise exception 'INVALID_INTAKE_INVERSE';
   end if;
 

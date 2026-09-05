@@ -464,6 +464,15 @@ describe("workspace intake database foundation", () => {
       "v_step.forward_result -> 'postActionSnapshot' ->> 'id'",
     );
     expect(archiveUndo).toMatch(
+      /jsonb_typeof\(\s*v_step\.forward_result -> 'postActionSnapshot' -> 'id'\s*\)\s+is distinct from 'string'/,
+    );
+    expect(archiveUndo).toMatch(
+      /jsonb_typeof\(\s*v_step\.forward_result -> 'postActionSnapshot' -> 'collection_id'\s*\)\s+is distinct from 'string'/,
+    );
+    expect(archiveUndo).toMatch(
+      /v_step\.forward_result -> 'postActionSnapshot' ->> 'collection_id'\s+is distinct from v_step\.forward_result ->> 'collectionId'/,
+    );
+    expect(archiveUndo).toMatch(
       /from public\.knowledge_documents[\s\S]*?id = p_document_id[\s\S]*?user_id = p_user_id[\s\S]*?for update/,
     );
     expect(archiveUndo).toMatch(
@@ -488,6 +497,41 @@ describe("workspace intake database foundation", () => {
     expect(relationUndo).toMatch(
       /delete from public\.knowledge_relations[\s\S]*?id = p_relation_id[\s\S]*?user_id = p_user_id/,
     );
+    for (const definition of [relationUndo, replayedRelationUndo]) {
+      expect(definition).toContain(
+        "jsonb_typeof(v_step.forward_result -> 'postActionSnapshot')",
+      );
+      for (const field of [
+        "id",
+        "source_type",
+        "source_id",
+        "target_type",
+        "target_id",
+        "relation_type",
+        "creator",
+      ]) {
+        expect(definition).toMatch(
+          new RegExp(
+            `jsonb_typeof\\(\\s*v_step\\.forward_result -> 'postActionSnapshot' -> '${field}'\\s*\\)\\s+is distinct from 'string'`,
+          ),
+        );
+      }
+      expect(definition).toMatch(
+        /jsonb_typeof\(\s*v_step\.forward_result -> 'postActionSnapshot' -> 'confidence'\s*\)\s+is distinct from 'number'/,
+      );
+      expect(definition).toMatch(
+        /v_step\.forward_result -> 'postActionSnapshot' ->> 'source_type'\s+is distinct from 'knowledge_document'/,
+      );
+      expect(definition).toMatch(
+        /v_step\.forward_result -> 'postActionSnapshot' ->> 'relation_type'\s+is distinct from 'source_of'/,
+      );
+      expect(definition).toMatch(
+        /v_step\.forward_result -> 'postActionSnapshot' ->> 'creator'\s+is distinct from 'assistant'/,
+      );
+      expect(definition).toMatch(
+        /from public\.workspace_intake_items[\s\S]*?id = p_item_id[\s\S]*?user_id = p_user_id[\s\S]*?batch_id = p_batch_id[\s\S]*?document_id::text\s*=\s*v_step\.forward_result -> 'postActionSnapshot' ->> 'source_id'[\s\S]*?for update/,
+      );
+    }
     expect(replayedRelationUndo).toMatch(
       /from public\.workspace_action_steps[\s\S]*?id = p_step_id[\s\S]*?user_id = p_user_id[\s\S]*?batch_id = p_batch_id[\s\S]*?item_id = p_item_id[\s\S]*?for update/,
     );

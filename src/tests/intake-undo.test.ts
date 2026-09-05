@@ -379,6 +379,122 @@ describe("undoIntakeBatch", () => {
     expect(harness.repository.markReplayedRelationUndone).not.toHaveBeenCalled();
   });
 
+  it("rejects incomplete or mistyped relation snapshots for new and replayed relations", async () => {
+    const invalidValues: Record<string, unknown> = {
+      id: 7,
+      source_type: 7,
+      source_id: 7,
+      target_type: 7,
+      target_id: 7,
+      relation_type: 7,
+      creator: 7,
+      confidence: "0.86",
+    };
+
+    for (const replayed of [false, true]) {
+      for (const field of Object.keys(invalidValues)) {
+        for (const mutation of ["missing", "mistyped"] as const) {
+          const harness = createHarness();
+          const step = stepById(harness.batch, "step-relation");
+          const forward = requireForwardResult(step);
+          const snapshot = {
+            ...(forward.postActionSnapshot as Record<string, unknown>),
+          };
+          if (mutation === "missing") {
+            delete snapshot[field];
+          } else {
+            snapshot[field] = invalidValues[field];
+          }
+          setExpectedSnapshot(step, snapshot);
+          forward.replayed = replayed;
+          if (replayed) {
+            step.inverseAction = null;
+            step.inverseInput = null;
+          }
+
+          await expect(
+            undoIntakeBatch("owner-1", "batch-1", harness.dependencies),
+            `${replayed ? "replayed" : "new"} relation ${mutation} ${field}`,
+          ).rejects.toThrow("INVALID_INTAKE_INVERSE");
+          expect(harness.repository.beginUndo).not.toHaveBeenCalled();
+          expect(harness.repository.undoRelationStep).not.toHaveBeenCalled();
+          expect(
+            harness.repository.markReplayedRelationUndone,
+          ).not.toHaveBeenCalled();
+        }
+      }
+    }
+  });
+
+  it("rejects relation snapshot values outside the exact Task 6 receipt shape", async () => {
+    const invalidValues: Record<string, unknown> = {
+      source_type: "external",
+      source_id: "document-other",
+      target_type: "todo",
+      target_id: "",
+      relation_type: "related_to",
+      creator: "user",
+      confidence: 1.01,
+    };
+
+    for (const replayed of [false, true]) {
+      for (const [field, value] of Object.entries(invalidValues)) {
+        const harness = createHarness();
+        const step = stepById(harness.batch, "step-relation");
+        const forward = requireForwardResult(step);
+        setExpectedSnapshot(step, {
+          ...(forward.postActionSnapshot as Record<string, unknown>),
+          [field]: value,
+        });
+        forward.replayed = replayed;
+        if (replayed) {
+          step.inverseAction = null;
+          step.inverseInput = null;
+        }
+
+        await expect(
+          undoIntakeBatch("owner-1", "batch-1", harness.dependencies),
+          `${replayed ? "replayed" : "new"} relation invalid ${field}`,
+        ).rejects.toThrow("INVALID_INTAKE_INVERSE");
+        expect(harness.repository.beginUndo).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("rejects archive snapshots with missing or inconsistent collection state", async () => {
+    const mutations = [
+      (snapshot: Record<string, unknown>) => {
+        delete snapshot.collection_id;
+      },
+      (snapshot: Record<string, unknown>) => {
+        snapshot.collection_id = 7;
+      },
+      (snapshot: Record<string, unknown>) => {
+        snapshot.collection_id = null;
+      },
+      (snapshot: Record<string, unknown>) => {
+        snapshot.collection_id = "collection-other";
+      },
+    ];
+
+    for (const mutate of mutations) {
+      const harness = createHarness();
+      const step = stepById(harness.batch, "step-archive");
+      const forward = requireForwardResult(step);
+      const snapshot = {
+        ...(forward.postActionSnapshot as Record<string, unknown>),
+      };
+      mutate(snapshot);
+      setExpectedSnapshot(step, snapshot);
+
+      await expect(
+        undoIntakeBatch("owner-1", "batch-1", harness.dependencies),
+      ).rejects.toThrow("INVALID_INTAKE_INVERSE");
+      expect(harness.repository.beginUndo).not.toHaveBeenCalled();
+      expect(harness.repository.undoArchiveStep).not.toHaveBeenCalled();
+    }
+  });
+
   it("rejects relation receipts outside the exact reversible action schema", async () => {
     for (const replayed of [false, true]) {
       const harness = createHarness();
@@ -857,4 +973,12 @@ function requireForwardResult(
     throw new Error("Missing forward result");
   }
   return step.forwardResult as Record<string, unknown>;
+}
+
+function setExpectedSnapshot(
+  step: IntakeActionStep,
+  snapshot: Record<string, unknown>,
+): void {
+  requireForwardResult(step).postActionSnapshot = snapshot;
+  step.conflictFingerprint = fingerprintRecord(snapshot);
 }

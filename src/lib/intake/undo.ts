@@ -28,6 +28,12 @@ const reversibleRelationActions = new Set([
   "relation.create:calendar",
 ]);
 
+const relationTargetTypeByAction = {
+  "relation.create:note": "note",
+  "relation.create:todo": "todo",
+  "relation.create:calendar": "calendar_event",
+} as const;
+
 type JsonObject = Record<string, unknown>;
 
 type PreparedInverse =
@@ -175,7 +181,12 @@ function prepareInverse(
     ) {
       const relationId = requireString(forward.id);
       const expected = readExpectedState(forward, step);
-      requireExpectedTargetId(expected.snapshot, relationId);
+      requireRelationSnapshot(
+        expected.snapshot,
+        step.actionName,
+        relationId,
+        item.documentId,
+      );
       return {
         kind: "replayed_relation",
         step,
@@ -223,7 +234,7 @@ function prepareInverse(
     ) {
       throw new Error("INVALID_INTAKE_INVERSE");
     }
-    requireExpectedTargetId(expected.snapshot, documentId);
+    requireArchiveSnapshot(forward, expected.snapshot, documentId);
     return {
       kind: "archive",
       step,
@@ -241,7 +252,12 @@ function prepareInverse(
     forward.replayed === false
   ) {
     const relationId = exactReceiptId(forward, step.inverseInput);
-    requireExpectedTargetId(expected.snapshot, relationId);
+    requireRelationSnapshot(
+      expected.snapshot,
+      step.actionName,
+      relationId,
+      item.documentId,
+    );
     return {
       kind: "relation",
       step,
@@ -294,6 +310,47 @@ function requireExpectedTargetId(
   }
 }
 
+function requireArchiveSnapshot(
+  forward: JsonObject,
+  expectedSnapshot: JsonObject,
+  documentId: string,
+): void {
+  requireExpectedTargetId(expectedSnapshot, documentId);
+  const collectionId = requireString(expectedSnapshot.collection_id);
+  if (requireString(forward.collectionId) !== collectionId) {
+    throw new Error("INVALID_INTAKE_INVERSE");
+  }
+}
+
+function requireRelationSnapshot(
+  expectedSnapshot: JsonObject,
+  actionName: string,
+  relationId: string,
+  documentId: string,
+): void {
+  requireExpectedTargetId(expectedSnapshot, relationId);
+  if (
+    expectedSnapshot.source_type !== "knowledge_document" ||
+    requireString(expectedSnapshot.source_id) !== documentId ||
+    expectedSnapshot.target_type !== relationTargetType(actionName) ||
+    !requireString(expectedSnapshot.target_id) ||
+    expectedSnapshot.relation_type !== "source_of" ||
+    expectedSnapshot.creator !== "assistant"
+  ) {
+    throw new Error("INVALID_INTAKE_INVERSE");
+  }
+  requireConfidence(expectedSnapshot.confidence);
+}
+
+function relationTargetType(actionName: string): string {
+  if (actionName in relationTargetTypeByAction) {
+    return relationTargetTypeByAction[
+      actionName as keyof typeof relationTargetTypeByAction
+    ];
+  }
+  throw new Error("INVALID_INTAKE_INVERSE");
+}
+
 function stepMutation(ownerId: string, step: IntakeActionStep): UndoStepInput {
   return {
     ownerId,
@@ -328,4 +385,16 @@ function requireString(value: unknown): string {
 function readNullableString(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   return requireString(value);
+}
+
+function requireConfidence(value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    value > 1
+  ) {
+    throw new Error("INVALID_INTAKE_INVERSE");
+  }
+  return value;
 }
