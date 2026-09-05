@@ -1822,6 +1822,8 @@ begin
       < '0'::jsonb
     or v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
       > '1'::jsonb
+    or v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+      is distinct from to_jsonb(v_step.confidence)
     or v_step.conflict_fingerprint
       is distinct from p_expected_fingerprint
     or v_step.action_name is null
@@ -1971,9 +1973,10 @@ begin
     or jsonb_typeof(
       v_step.forward_result -> 'postActionSnapshot' -> 'creator'
     ) is distinct from 'string'
+    or not (v_step.forward_result -> 'postActionSnapshot' ? 'confidence')
     or jsonb_typeof(
       v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
-    ) is distinct from 'number'
+    ) not in ('number', 'null')
     or v_step.forward_result -> 'postActionSnapshot' ->> 'source_type'
       is distinct from 'knowledge_document'
     or v_step.forward_result -> 'postActionSnapshot' ->> 'source_id' = ''
@@ -1988,11 +1991,18 @@ begin
     or v_step.forward_result -> 'postActionSnapshot' ->> 'relation_type'
       is distinct from 'source_of'
     or v_step.forward_result -> 'postActionSnapshot' ->> 'creator'
-      is distinct from 'assistant'
-    or v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
-      < '0'::jsonb
-    or v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
-      > '1'::jsonb
+      not in ('user', 'assistant', 'importer')
+    or (
+      jsonb_typeof(
+        v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+      ) = 'number'
+      and (
+        v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+          < '0'::jsonb
+        or v_step.forward_result -> 'postActionSnapshot' -> 'confidence'
+          > '1'::jsonb
+      )
+    )
     or v_step.conflict_fingerprint
       is distinct from p_expected_fingerprint
     or v_step.action_name is null

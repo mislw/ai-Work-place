@@ -517,21 +517,37 @@ describe("workspace intake database foundation", () => {
         );
       }
       expect(definition).toMatch(
-        /jsonb_typeof\(\s*v_step\.forward_result -> 'postActionSnapshot' -> 'confidence'\s*\)\s+is distinct from 'number'/,
-      );
-      expect(definition).toMatch(
         /v_step\.forward_result -> 'postActionSnapshot' ->> 'source_type'\s+is distinct from 'knowledge_document'/,
       );
       expect(definition).toMatch(
         /v_step\.forward_result -> 'postActionSnapshot' ->> 'relation_type'\s+is distinct from 'source_of'/,
       );
       expect(definition).toMatch(
-        /v_step\.forward_result -> 'postActionSnapshot' ->> 'creator'\s+is distinct from 'assistant'/,
-      );
-      expect(definition).toMatch(
         /from public\.workspace_intake_items[\s\S]*?id = p_item_id[\s\S]*?user_id = p_user_id[\s\S]*?batch_id = p_batch_id[\s\S]*?document_id::text\s*=\s*v_step\.forward_result -> 'postActionSnapshot' ->> 'source_id'[\s\S]*?for update/,
       );
     }
+    expect(relationUndo).toMatch(
+      /jsonb_typeof\(\s*v_step\.forward_result -> 'postActionSnapshot' -> 'confidence'\s*\)\s+is distinct from 'number'/,
+    );
+    expect(relationUndo).toMatch(
+      /v_step\.forward_result -> 'postActionSnapshot' ->> 'creator'\s+is distinct from 'assistant'/,
+    );
+    expect(relationUndo).toMatch(
+      /v_step\.forward_result -> 'postActionSnapshot' -> 'confidence'\s+is distinct from to_jsonb\(v_step\.confidence\)/,
+    );
+    expect(replayedRelationUndo).toMatch(
+      /v_step\.forward_result -> 'postActionSnapshot' ->> 'creator'\s+not in \('user', 'assistant', 'importer'\)/,
+    );
+    expect(replayedRelationUndo).toMatch(
+      /not \(v_step\.forward_result -> 'postActionSnapshot' \? 'confidence'\)/,
+    );
+    expect(replayedRelationUndo).toMatch(
+      /jsonb_typeof\(\s*v_step\.forward_result -> 'postActionSnapshot' -> 'confidence'\s*\)\s+not in \('number', 'null'\)/,
+    );
+    expect(replayedRelationUndo).toMatch(
+      /jsonb_typeof\(\s*v_step\.forward_result -> 'postActionSnapshot' -> 'confidence'\s*\) = 'number'[\s\S]*?postActionSnapshot' -> 'confidence'[\s\S]*?< '0'::jsonb[\s\S]*?postActionSnapshot' -> 'confidence'[\s\S]*?> '1'::jsonb/,
+    );
+    expect(replayedRelationUndo).not.toContain("to_jsonb(v_step.confidence)");
     expect(replayedRelationUndo).toMatch(
       /from public\.workspace_action_steps[\s\S]*?id = p_step_id[\s\S]*?user_id = p_user_id[\s\S]*?batch_id = p_batch_id[\s\S]*?item_id = p_item_id[\s\S]*?for update/,
     );

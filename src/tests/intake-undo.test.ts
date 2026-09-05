@@ -426,15 +426,13 @@ describe("undoIntakeBatch", () => {
     }
   });
 
-  it("rejects relation snapshot values outside the exact Task 6 receipt shape", async () => {
+  it("rejects shared relation snapshot values outside the exact Task 6 receipt shape", async () => {
     const invalidValues: Record<string, unknown> = {
       source_type: "external",
       source_id: "document-other",
       target_type: "todo",
       target_id: "",
       relation_type: "related_to",
-      creator: "user",
-      confidence: 1.01,
     };
 
     for (const replayed of [false, true]) {
@@ -458,6 +456,90 @@ describe("undoIntakeBatch", () => {
         ).rejects.toThrow("INVALID_INTAKE_INVERSE");
         expect(harness.repository.beginUndo).not.toHaveBeenCalled();
       }
+    }
+  });
+
+  it("accepts replayed relations with persisted creator and nullable confidence semantics", async () => {
+    for (const { creator, confidence } of [
+      { creator: "user", confidence: null },
+      { creator: "importer", confidence: 0.25 },
+      { creator: "assistant", confidence: 0.5 },
+    ]) {
+      const harness = createHarness();
+      const step = stepById(harness.batch, "step-relation");
+      const forward = requireForwardResult(step);
+      setExpectedSnapshot(step, {
+        ...(forward.postActionSnapshot as Record<string, unknown>),
+        creator,
+        confidence,
+      });
+      forward.replayed = true;
+      step.inverseAction = null;
+      step.inverseInput = null;
+
+      await expect(
+        undoIntakeBatch("owner-1", "batch-1", harness.dependencies),
+      ).resolves.toMatchObject({ status: "undone" });
+      expect(harness.repository.undoRelationStep).not.toHaveBeenCalled();
+      expect(
+        harness.repository.markReplayedRelationUndone,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stepId: "step-relation",
+          relationId: "relation-1",
+          expectedSnapshot: expect.objectContaining({ creator, confidence }),
+        }),
+      );
+      expect(harness.relations.has("relation-1")).toBe(true);
+    }
+  });
+
+  it("rejects replayed relations with invalid creator or confidence", async () => {
+    for (const invalid of [
+      { creator: "system" },
+      { confidence: -0.01 },
+      { confidence: 1.01 },
+      { confidence: "0.5" },
+    ]) {
+      const harness = createHarness();
+      const step = stepById(harness.batch, "step-relation");
+      const forward = requireForwardResult(step);
+      setExpectedSnapshot(step, {
+        ...(forward.postActionSnapshot as Record<string, unknown>),
+        ...invalid,
+      });
+      forward.replayed = true;
+      step.inverseAction = null;
+      step.inverseInput = null;
+
+      await expect(
+        undoIntakeBatch("owner-1", "batch-1", harness.dependencies),
+      ).rejects.toThrow("INVALID_INTAKE_INVERSE");
+      expect(harness.repository.beginUndo).not.toHaveBeenCalled();
+      expect(
+        harness.repository.markReplayedRelationUndone,
+      ).not.toHaveBeenCalled();
+    }
+  });
+
+  it("rejects a new relation whose creator or confidence differs from its step receipt", async () => {
+    for (const invalid of [
+      { creator: "user" },
+      { confidence: 0.5 },
+    ]) {
+      const harness = createHarness();
+      const step = stepById(harness.batch, "step-relation");
+      const forward = requireForwardResult(step);
+      setExpectedSnapshot(step, {
+        ...(forward.postActionSnapshot as Record<string, unknown>),
+        ...invalid,
+      });
+
+      await expect(
+        undoIntakeBatch("owner-1", "batch-1", harness.dependencies),
+      ).rejects.toThrow("INVALID_INTAKE_INVERSE");
+      expect(harness.repository.beginUndo).not.toHaveBeenCalled();
+      expect(harness.repository.undoRelationStep).not.toHaveBeenCalled();
     }
   });
 

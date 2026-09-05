@@ -186,6 +186,7 @@ function prepareInverse(
         step.actionName,
         relationId,
         item.documentId,
+        { replayed: true },
       );
       return {
         kind: "replayed_relation",
@@ -257,6 +258,7 @@ function prepareInverse(
       step.actionName,
       relationId,
       item.documentId,
+      { replayed: false, stepConfidence: step.confidence },
     );
     return {
       kind: "relation",
@@ -327,6 +329,9 @@ function requireRelationSnapshot(
   actionName: string,
   relationId: string,
   documentId: string,
+  receipt:
+    | { replayed: true }
+    | { replayed: false; stepConfidence: number },
 ): void {
   requireExpectedTargetId(expectedSnapshot, relationId);
   if (
@@ -334,12 +339,27 @@ function requireRelationSnapshot(
     requireString(expectedSnapshot.source_id) !== documentId ||
     expectedSnapshot.target_type !== relationTargetType(actionName) ||
     !requireString(expectedSnapshot.target_id) ||
-    expectedSnapshot.relation_type !== "source_of" ||
-    expectedSnapshot.creator !== "assistant"
+    expectedSnapshot.relation_type !== "source_of"
   ) {
     throw new Error("INVALID_INTAKE_INVERSE");
   }
-  requireConfidence(expectedSnapshot.confidence);
+
+  const creator = requireString(expectedSnapshot.creator);
+  if (!receipt.replayed) {
+    if (
+      creator !== "assistant" ||
+      requireConfidence(expectedSnapshot.confidence) !==
+        requireConfidence(receipt.stepConfidence)
+    ) {
+      throw new Error("INVALID_INTAKE_INVERSE");
+    }
+    return;
+  }
+
+  if (!["user", "assistant", "importer"].includes(creator)) {
+    throw new Error("INVALID_INTAKE_INVERSE");
+  }
+  requireNullableConfidence(expectedSnapshot, "confidence");
 }
 
 function relationTargetType(actionName: string): string {
@@ -397,4 +417,15 @@ function requireConfidence(value: unknown): number {
     throw new Error("INVALID_INTAKE_INVERSE");
   }
   return value;
+}
+
+function requireNullableConfidence(
+  value: JsonObject,
+  key: string,
+): number | null {
+  if (!Object.prototype.hasOwnProperty.call(value, key)) {
+    throw new Error("INVALID_INTAKE_INVERSE");
+  }
+  if (value[key] === null) return null;
+  return requireConfidence(value[key]);
 }
