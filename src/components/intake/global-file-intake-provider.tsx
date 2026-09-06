@@ -47,8 +47,8 @@ export function GlobalFileIntakeProvider({ children }: { children: ReactNode }) 
   const batchesRef = useRef<IntakeBatch[]>([]);
   const [drawerOpen, setDrawerOpenState] = useState(() =>
     typeof window === "undefined"
-      ? true
-      : sessionStorage.getItem(DRAWER_KEY) !== "false",
+      ? false
+      : sessionStorage.getItem(DRAWER_KEY) === "true",
   );
   const routeRef = useRef("/workspace");
   const durableItems = useRef(new Map<string, Map<string, KnowledgeUploadItem>>());
@@ -80,6 +80,12 @@ export function GlobalFileIntakeProvider({ children }: { children: ReactNode }) 
     if (!response.ok) throw new Error(body.error?.message ?? "读取接管批次失败");
     const parsed = intakeBatchSchema.array().safeParse(body.batches);
     if (!parsed.success) throw new Error("INVALID_INTAKE_BATCH_RESPONSE");
+    if (
+      sessionStorage.getItem(DRAWER_KEY) === null &&
+      parsed.data.some((batch) => ACTIVE_STATUSES.has(batch.status))
+    ) {
+      setDrawerOpenState(true);
+    }
     if (sequence < lastAppliedRefresh.current) return;
     lastAppliedRefresh.current = sequence;
     if (versionAtStart === mutationVersion.current) {

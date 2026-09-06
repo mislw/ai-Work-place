@@ -22,6 +22,7 @@ export function AssistantComposer(props: {
   const [dragging, setDragging] = useState(false);
   return (
     <div
+      data-intake-drop-owner
       className={cn(
         "flex min-w-0 items-end gap-2 rounded-md border border-input bg-card p-2 shadow-sm focus-within:ring-2 focus-within:ring-ring",
         dragging && "border-primary bg-primary/5",

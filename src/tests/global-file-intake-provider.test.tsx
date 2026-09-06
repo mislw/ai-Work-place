@@ -32,6 +32,15 @@ describe("GlobalFileIntakeProvider", () => {
     );
   });
 
+  it("keeps an empty workspace closed until files or durable batches exist", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ batches: [] }));
+
+    render(<ProviderHarness />);
+
+    await waitFor(() => expect(screen.getByText("面板关闭")).toBeInTheDocument());
+    expect(sessionStorage.getItem("workspace-intake-drawer-open")).toBeNull();
+  });
+
   it("registers one client batch after durable uploads and appends later items", async () => {
     const postedBodies: Array<Record<string, unknown>> = [];
     let uploadIndex = 0;
