@@ -6,6 +6,7 @@ import {
   MAX_KNOWLEDGE_FILE_BYTES,
   MAX_KNOWLEDGE_UPLOAD_CONCURRENCY,
 } from "@/lib/knowledge/contracts";
+import type { WorkspacePageContextV1 } from "@/lib/intake/contracts";
 
 export type KnowledgeUploadState =
   | "waiting"
@@ -43,20 +44,44 @@ export interface KnowledgeUploadItem {
   error?: string;
   detail?: KnowledgeUploadDetail;
   selectedProposalIds: Set<string>;
+  intake?: KnowledgeUploadIntake;
 }
 
-export function useKnowledgeUploads(options?: {
+export interface KnowledgeUploadIntake {
+  clientBatchId: string;
+  pageContext: WorkspacePageContextV1;
+}
+
+export interface KnowledgeUploadCallbacks {
   onConfirmed?: (item: KnowledgeUploadItem) => void;
-}) {
+  onDurable?: (item: KnowledgeUploadItem) => void;
+  onInterrupted?: (item: KnowledgeUploadItem) => void;
+  onCancelIntake?: (item: KnowledgeUploadItem) => void | Promise<void>;
+}
+
+export function useKnowledgeUploads(options?: KnowledgeUploadCallbacks) {
   const [items, setItems] = useState<KnowledgeUploadItem[]>([]);
+  const itemsRef = useRef<KnowledgeUploadItem[]>([]);
+  const callbacks = useRef(options);
   const uploading = useRef(new Set<string>());
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const disposed = useRef(false);
+  callbacks.current = options;
+  itemsRef.current = items;
 
   useEffect(() => {
     disposed.current = false;
     return () => {
       disposed.current = true;
+      for (const item of itemsRef.current) {
+        if (
+          item.intake &&
+          !item.assetId &&
+          ["waiting", "uploading"].includes(item.state)
+        ) {
+          callbacks.current?.onInterrupted?.(item);
+        }
+      }
       for (const timer of timers.current.values()) clearTimeout(timer);
       timers.current.clear();
     };
@@ -144,13 +169,16 @@ export function useKnowledgeUploads(options?: {
         if (!response.ok || !body.assetId || !body.documentId || !body.jobId) {
           throw new Error(body.error?.message ?? "知识文件上传失败");
         }
-        updateItem(item.localId, {
+        const durableItem: KnowledgeUploadItem = {
+          ...item,
           state: "queued",
           progress: 5,
           assetId: body.assetId,
           documentId: body.documentId,
           jobId: body.jobId,
-        });
+        };
+        updateItem(item.localId, durableItem);
+        callbacks.current?.onDurable?.(durableItem);
         pollItem(item.localId, body.documentId);
       } catch (error) {
         updateItem(item.localId, { state: "failed", error: readError(error) });
@@ -182,7 +210,10 @@ export function useKnowledgeUploads(options?: {
     for (const item of waiting) void uploadItem(item);
   }, [items, uploadItem]);
 
-  const addFiles = useCallback((files: File[] | FileList) => {
+  const addFiles = useCallback((
+    files: File[] | FileList,
+    intake?: KnowledgeUploadIntake,
+  ) => {
     const candidates = Array.from(files).slice(0, MAX_KNOWLEDGE_BATCH_FILES);
     const next = candidates.map((file): KnowledgeUploadItem => {
       const validationError = validateFile(file);
@@ -193,6 +224,7 @@ export function useKnowledgeUploads(options?: {
         progress: 0,
         error: validationError ?? undefined,
         selectedProposalIds: new Set(),
+        ...(intake ? { intake } : {}),
       };
     });
     setItems((current) => [...current, ...next]);
@@ -241,9 +273,9 @@ export function useKnowledgeUploads(options?: {
             : candidate,
         ),
       );
-      options?.onConfirmed?.(item);
+      callbacks.current?.onConfirmed?.(item);
     },
-    [items, options],
+    [items],
   );
 
   const retry = useCallback((localId: string) => {
@@ -273,7 +305,10 @@ export function useKnowledgeUploads(options?: {
       const timer = timers.current.get(localId);
       if (timer) clearTimeout(timer);
       timers.current.delete(localId);
-      if (item.assetId) {
+      if (item.intake) {
+        if (item.assetId) await callbacks.current?.onCancelIntake?.(item);
+        else callbacks.current?.onInterrupted?.(item);
+      } else if (item.assetId) {
         const response = await fetch(
           `/api/knowledge/assets/${item.assetId}?confirmed=true`,
           { method: "DELETE" },

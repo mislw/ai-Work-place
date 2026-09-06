@@ -65,6 +65,7 @@ export const workspacePageContextV1Schema = z
       })
       .strict()
       .optional(),
+    assistantSessionId: boundedIdentifierSchema.optional(),
     view: z
       .object({
         date: z.string().date().optional(),

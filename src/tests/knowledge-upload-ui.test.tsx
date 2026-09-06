@@ -63,6 +63,49 @@ describe("useKnowledgeUploads", () => {
     act(() => pending[0]?.());
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
   });
+
+  it("emits the durable upload item before polling analysis", async () => {
+    const onDurable = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/knowledge/uploads") {
+        return Response.json(
+          { assetId: "asset", documentId: "document", jobId: "job" },
+          { status: 201 },
+        );
+      }
+      return Response.json({ item: { status: "ready", stage: "complete", proposals: [] } });
+    });
+    render(<UploadCallbackHarness onDurable={onDurable} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "添加回调文件" }));
+
+    await waitFor(() =>
+      expect(onDurable).toHaveBeenCalledWith(
+        expect.objectContaining({ assetId: "asset", documentId: "document", jobId: "job" }),
+      ),
+    );
+  });
+
+  it("cancels durable intake ownership without deleting the original asset", async () => {
+    const onCancelIntake = vi.fn().mockResolvedValue(undefined);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/knowledge/uploads") {
+        return Response.json(
+          { assetId: "asset", documentId: "document", jobId: "job" },
+          { status: 201 },
+        );
+      }
+      return Response.json({ item: { status: "ready", stage: "complete", proposals: [] } });
+    });
+    render(<UploadCancelHarness onCancelIntake={onCancelIntake} />);
+    fireEvent.click(screen.getByRole("button", { name: "添加待取消文件" }));
+    await screen.findByRole("button", { name: "取消 intake 文件" });
+
+    fireEvent.click(screen.getByRole("button", { name: "取消 intake 文件" }));
+
+    await waitFor(() => expect(onCancelIntake).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/knowledge/assets/"))).toBe(false);
+  });
 });
 
 describe("KnowledgeFileCard", () => {
@@ -145,6 +188,45 @@ function UploadHarness() {
         添加三个文件
       </button>
       <span>{count}</span>
+    </div>
+  );
+}
+
+function UploadCallbackHarness({ onDurable }: { onDurable: (item: KnowledgeUploadItem) => void }) {
+  const uploads = useKnowledgeUploads({ onDurable });
+  return (
+    <button onClick={() => uploads.addFiles([new File(["x"], "callback.md")])}>
+      添加回调文件
+    </button>
+  );
+}
+
+function UploadCancelHarness({ onCancelIntake }: { onCancelIntake: (item: KnowledgeUploadItem) => Promise<void> }) {
+  const uploads = useKnowledgeUploads({ onCancelIntake });
+  const durable = uploads.items.find((item) => item.assetId);
+  return (
+    <div>
+      <button
+        onClick={() =>
+          uploads.addFiles(
+            [new File(["x"], "cancel.md")],
+            {
+              clientBatchId: "client-1",
+              pageContext: {
+                version: 1,
+                route: "/todos",
+                pageType: "todos",
+                capturedAt: "2026-09-06T08:00:00.000Z",
+                timezone: "Asia/Shanghai",
+                trigger: { kind: "file_drop", clientBatchId: "client-1" },
+              },
+            },
+          )
+        }
+      >
+        添加待取消文件
+      </button>
+      {durable ? <button onClick={() => void uploads.remove(durable.localId)}>取消 intake 文件</button> : null}
     </div>
   );
 }

@@ -211,6 +211,27 @@ describe("owner-scoped intake repository", () => {
     expect(definition).not.toMatch(/created_at\s*[<>=]/);
   });
 
+  it("reopens a terminal batch only when a replay appends a new durable item", () => {
+    const sql = readFileSync(
+      new URL("../../supabase/init.sql", import.meta.url),
+      "utf8",
+    );
+    const start = sql.indexOf(
+      "create or replace function public.register_workspace_intake_batch",
+    );
+    const end = sql.indexOf("$$;", start);
+    const definition = sql.slice(start, end);
+
+    expect(definition).toContain("v_inserted_item_count integer := 0");
+    expect(definition).toMatch(/get diagnostics v_inserted_row_count = row_count/);
+    expect(definition).toMatch(
+      /if v_inserted_item_count > 0[\s\S]*?v_batch_status in \('completed', 'partial', 'failed'\)[\s\S]*?status = 'processing'/,
+    );
+    expect(definition).toMatch(
+      /v_batch_status in \('cancelled', 'undoing', 'undone'\)[\s\S]*?return query/,
+    );
+  });
+
   it("surfaces registration ownership rejection", async () => {
     queryResults.push({
       data: null,

@@ -736,7 +736,10 @@ set search_path = public
 as $$
 declare
   v_batch_id uuid;
+  v_batch_status text;
   v_registration_status text;
+  v_inserted_item_count integer := 0;
+  v_inserted_row_count integer := 0;
   v_item jsonb;
   v_asset_id uuid;
   v_document_id uuid;
@@ -773,8 +776,9 @@ begin
 
   if found then
     v_registration_status := 'created';
+    v_batch_status := 'processing';
   else
-    select id into v_batch_id
+    select id, status into v_batch_id, v_batch_status
     from public.workspace_intake_batches
     where user_id = p_user_id
       and client_batch_id = p_client_batch_id
@@ -791,6 +795,21 @@ begin
       and user_id = p_user_id;
 
     v_registration_status := 'replayed';
+
+    if v_batch_status in ('cancelled', 'undoing', 'undone') then
+      return query
+      select
+        v_batch_id,
+        coalesce(
+          array_agg(i.id order by i.created_at, i.id),
+          array[]::uuid[]
+        ),
+        v_registration_status
+      from public.workspace_intake_items i
+      where i.batch_id = v_batch_id
+        and i.user_id = p_user_id;
+      return;
+    end if;
   end if;
 
   for v_item in select value from jsonb_array_elements(p_items)
@@ -841,7 +860,21 @@ begin
       'waiting_extraction'
     )
     on conflict (batch_id, document_id) do nothing;
+
+    get diagnostics v_inserted_row_count = row_count;
+    v_inserted_item_count := v_inserted_item_count + v_inserted_row_count;
   end loop;
+
+  if v_inserted_item_count > 0
+    and v_batch_status in ('completed', 'partial', 'failed') then
+    update public.workspace_intake_batches
+    set status = 'processing',
+        summary = null,
+        error_code = null,
+        completed_at = null
+    where id = v_batch_id
+      and user_id = p_user_id;
+  end if;
 
   return query
   select
