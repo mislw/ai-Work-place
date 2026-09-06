@@ -221,11 +221,18 @@ export interface ClearExpiredUndoDataInput {
   batchId: string;
 }
 
+export type IntakeBatchRegistration = "created" | "replayed";
+
+export interface RegisterIntakeBatchResult {
+  batch: IntakeBatch;
+  registration: IntakeBatchRegistration;
+}
+
 export interface IntakeRepository {
   registerBatch(
     ownerId: string,
     request: CreateIntakeBatchRequest,
-  ): Promise<IntakeBatch>;
+  ): Promise<RegisterIntakeBatchResult>;
   listActiveAndRecent(
     ownerId: string,
     recentLimit: number,
@@ -311,9 +318,16 @@ export function getIntakeRepository(): IntakeRepository {
       );
       throwIfError(error);
       const row = Array.isArray(data) ? data[0] : data;
-      const batchId = row ? String(asRow(row).batch_id ?? "") : "";
+      const registrationRow = asRow(row);
+      const batchId = String(registrationRow.batch_id ?? "");
       if (!batchId) throw new Error("INTAKE_BATCH_REGISTRATION_EMPTY");
-      return requireBatch(ownerId, batchId);
+      const registration = registrationStatus(
+        registrationRow.registration_status,
+      );
+      return {
+        batch: await requireBatch(ownerId, batchId),
+        registration,
+      };
     },
 
     async listActiveAndRecent(ownerId, recentLimit) {
@@ -749,6 +763,11 @@ function asRows(value: unknown): Record<string, unknown>[] {
 
 function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
+}
+
+function registrationStatus(value: unknown): IntakeBatchRegistration {
+  if (value === "created" || value === "replayed") return value;
+  throw new Error("INVALID_INTAKE_REGISTRATION_STATUS");
 }
 
 function undoStepResult(value: unknown): UndoStepResult {

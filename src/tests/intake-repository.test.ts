@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { createServiceClient, from, rpc } = vi.hoisted(() => ({
@@ -124,7 +125,16 @@ describe("owner-scoped intake repository", () => {
 
   it("registers camel-case item ids and hydrates through an owner-scoped query", async () => {
     queryResults.push(
-      { data: [{ batch_id: "batch-1", item_ids: ["item-1"] }], error: null },
+      {
+        data: [
+          {
+            batch_id: "batch-1",
+            item_ids: ["item-1"],
+            registration_status: "created",
+          },
+        ],
+        error: null,
+      },
       { data: batchRow(), error: null },
     );
 
@@ -147,7 +157,58 @@ describe("owner-scoped intake repository", () => {
       { kind: "eq", column: "user_id", value: "owner-1" },
       { kind: "eq", column: "id", value: "batch-1" },
     ]);
-    expect(result.id).toBe("batch-1");
+    expect(result).toEqual({
+      batch: expect.objectContaining({ id: "batch-1" }),
+      registration: "created",
+    });
+  });
+
+  it("maps an atomic registration replay without timestamp or pre-read guessing", async () => {
+    queryResults.push(
+      {
+        data: [
+          {
+            batch_id: "batch-1",
+            item_ids: ["item-1"],
+            registration_status: "replayed",
+          },
+        ],
+        error: null,
+      },
+      { data: batchRow(), error: null },
+    );
+
+    const result = await getIntakeRepository().registerBatch("owner-1", request);
+
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(queryRecords).toHaveLength(1);
+    expect(result).toEqual({
+      batch: expect.objectContaining({ id: "batch-1" }),
+      registration: "replayed",
+    });
+  });
+
+  it("declares a deployable atomic created/replayed registration RPC", () => {
+    const sql = readFileSync(
+      new URL("../../supabase/init.sql", import.meta.url),
+      "utf8",
+    );
+    const start = sql.indexOf(
+      "create or replace function public.register_workspace_intake_batch",
+    );
+    const end = sql.indexOf("$$;", start);
+    const definition = sql.slice(start, end);
+
+    expect(sql.slice(0, start)).toContain(
+      "drop function if exists public.register_workspace_intake_batch(uuid, text, text, jsonb, jsonb);",
+    );
+    expect(definition).toContain("registration_status text");
+    expect(definition).toContain("on conflict (user_id, client_batch_id) do nothing");
+    expect(definition).toContain("v_registration_status := 'created'");
+    expect(definition).toContain("v_registration_status := 'replayed'");
+    expect(definition).toContain("for update");
+    expect(definition).toContain("on conflict (batch_id, document_id) do nothing");
+    expect(definition).not.toMatch(/created_at\s*[<>=]/);
   });
 
   it("surfaces registration ownership rejection", async () => {
@@ -550,6 +611,22 @@ describe("owner-scoped intake repository", () => {
     ).rejects.toThrow("INTAKE_BATCH_NOT_RETRYABLE");
 
     expect(queryRecords).toEqual([]);
+  });
+
+  it("requires a retryable failed or partial item inside the atomic retry RPC", () => {
+    const sql = readFileSync(
+      new URL("../../supabase/init.sql", import.meta.url),
+      "utf8",
+    );
+    const start = sql.indexOf(
+      "create or replace function public.retry_workspace_intake_batch",
+    );
+    const end = sql.indexOf("$$;", start);
+    const definition = sql.slice(start, end);
+
+    expect(definition).toMatch(
+      /if not exists \([\s\S]*?from public\.workspace_intake_items[\s\S]*?user_id = p_user_id[\s\S]*?batch_id = p_batch_id[\s\S]*?status in \('failed', 'partial'\)[\s\S]*?return false;/,
+    );
   });
 
   it("cancels through one owner-scoped transaction RPC without asset queries", async () => {

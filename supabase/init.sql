@@ -717,6 +717,7 @@ begin
 end;
 $$;
 
+drop function if exists public.register_workspace_intake_batch(uuid, text, text, jsonb, jsonb);
 create or replace function public.register_workspace_intake_batch(
   p_user_id uuid,
   p_client_batch_id text,
@@ -726,7 +727,8 @@ create or replace function public.register_workspace_intake_batch(
 )
 returns table (
   batch_id uuid,
-  item_ids uuid[]
+  item_ids uuid[],
+  registration_status text
 )
 language plpgsql
 security definer
@@ -734,6 +736,7 @@ set search_path = public
 as $$
 declare
   v_batch_id uuid;
+  v_registration_status text;
   v_item jsonb;
   v_asset_id uuid;
   v_document_id uuid;
@@ -765,10 +768,30 @@ begin
   ) values (
     p_user_id, p_client_batch_id, p_source_type, p_page_context, 'processing'
   )
-  on conflict (user_id, client_batch_id) do update
-  set source_type = excluded.source_type,
-      page_context = excluded.page_context
+  on conflict (user_id, client_batch_id) do nothing
   returning id into v_batch_id;
+
+  if found then
+    v_registration_status := 'created';
+  else
+    select id into v_batch_id
+    from public.workspace_intake_batches
+    where user_id = p_user_id
+      and client_batch_id = p_client_batch_id
+    for update;
+
+    if not found then
+      raise exception 'INTAKE_BATCH_REGISTRATION_EMPTY';
+    end if;
+
+    update public.workspace_intake_batches
+    set source_type = p_source_type,
+        page_context = p_page_context
+    where id = v_batch_id
+      and user_id = p_user_id;
+
+    v_registration_status := 'replayed';
+  end if;
 
   for v_item in select value from jsonb_array_elements(p_items)
   loop
@@ -826,7 +849,8 @@ begin
     coalesce(
       array_agg(i.id order by i.created_at, i.id),
       array[]::uuid[]
-    )
+    ),
+    v_registration_status
   from public.workspace_intake_items i
   where i.batch_id = v_batch_id
     and i.user_id = p_user_id;
@@ -1135,6 +1159,16 @@ begin
   for update;
 
   if not found then
+    return false;
+  end if;
+
+  if not exists (
+    select 1
+    from public.workspace_intake_items
+    where user_id = p_user_id
+      and batch_id = p_batch_id
+      and status in ('failed', 'partial')
+  ) then
     return false;
   end if;
 
