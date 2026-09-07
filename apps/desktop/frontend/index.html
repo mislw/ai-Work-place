@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:"
+    />
+    <title>Personal AI Workspace</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="status-shell">
+      <div class="brand-mark" aria-hidden="true">AI</div>
+      <p class="eyebrow">PERSONAL AI WORKSPACE</p>
+      <h1>正在连接个人工作台</h1>
+      <p class="description">
+        App 仅在工作台服务开启时使用。连接恢复后会自动进入，不会在本机创建第二套数据。
+      </p>
+      <div class="status-row" role="status">
+        <span class="pulse" aria-hidden="true"></span>
+        <span id="status-text">正在检测服务...</span>
+      </div>
+      <button id="retry-button" type="button">立即重试</button>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

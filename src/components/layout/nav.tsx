@@ -14,6 +14,7 @@ import {
   Menu,
   X,
   Loader2,
+  Wrench,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -30,6 +31,7 @@ const NAV = [
   { href: "/todos", label: "今日待办", icon: CheckSquare, iconClass: "text-[#c39809]" },
   { href: "/notes", label: "笔记", icon: FileText, iconClass: "text-[#64a85c]" },
   { href: "/documents", label: "文档", icon: Sparkles, iconClass: "text-[#3c8dce]" },
+  { href: "/toolbox", label: "工具箱", icon: Wrench, iconClass: "text-[#64a85c]" },
   { href: "/settings", label: "设置", icon: SettingsIcon, iconClass: "text-foreground/70" },
 ] as const;
 const BOTTOM_NAV_HREFS = new Set(["/workspace", "/calendar", "/todos", "/notes"]);

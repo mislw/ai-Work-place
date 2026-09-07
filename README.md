@@ -391,6 +391,17 @@ personal-ai-workspace/
 
 ---
 
+## 本地工具箱
+
+运行 `npm run toolbox:local`，或双击
+`tools/local-toolbox/启动本地工具箱.cmd`。工作台的“工具箱”只负责检查和打开
+本机页面；压缩文件、输出路径和密码不会上传到工作台、NAS 或云端。
+
+“解压小工具”需要本机安装 WinRAR，支持普通 ZIP、RAR、7z、数字分卷、
+伪装后缀和嵌套压缩包。原始压缩包和分卷会保留，已有输出不会被覆盖。
+
+---
+
 ## License
 
 MIT — 自由用于个人与商用。

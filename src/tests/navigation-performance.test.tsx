@@ -78,6 +78,7 @@ const appPages = [
   "calendar/page.tsx",
   "notes/page.tsx",
   "documents/page.tsx",
+  "toolbox/page.tsx",
 ];
 
 describe("navigation performance safeguards", () => {

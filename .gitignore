@@ -2,6 +2,10 @@
 /node_modules
 /services/harness-gateway/node_modules/
 /services/harness-gateway/dist/
+/apps/desktop/gen/
+/apps/desktop/node_modules/
+/apps/desktop/resources/local-toolbox/
+/apps/desktop/target/
 /.pnp
 .pnp.js
 

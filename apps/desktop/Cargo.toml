@@ -1,0 +1,30 @@
+[package]
+name = "personal-ai-workspace-desktop"
+version = "0.1.1"
+description = "Online-only Windows desktop client for Personal AI Workspace"
+authors = ["Luojiawei"]
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+name = "personal_ai_workspace_desktop"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+opener = "0.8.5"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2"] }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.11.5", features = [] }
+thiserror = "2"
+tokio = { version = "1", features = ["time"] }
+url = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

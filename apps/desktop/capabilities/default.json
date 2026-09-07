@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "no-remote-native-access",
+  "description": "Remote workspace content receives no native Tauri capabilities.",
+  "windows": ["main"],
+  "permissions": []
+}

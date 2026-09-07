@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Personal AI Workspace",
+  "version": "0.1.1",
+  "identifier": "cn.mislw.personal-ai-workspace",
+  "build": {
+    "frontendDist": "frontend"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:",
+      "capabilities": []
+    },
+    "windows": []
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": ["resources/local-toolbox/**/*"],
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "languages": ["SimpChinese"],
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

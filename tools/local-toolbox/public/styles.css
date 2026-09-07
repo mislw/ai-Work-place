@@ -1,0 +1,44 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: #f5f6f3;
+  color: #20231f;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button, input { font: inherit; }
+button { min-height: 38px; border: 1px solid #b9beb6; border-radius: 6px; background: #fff; padding: 0 14px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: #4c7555; background: #f1f7f2; }
+button:disabled { cursor: not-allowed; opacity: .48; }
+.shell { width: min(760px, calc(100% - 32px)); margin: 28px auto; }
+.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid #d7dbd4; padding-bottom: 16px; }
+.eyebrow { margin: 0 0 4px; color: #657067; font-size: 12px; font-weight: 700; }
+h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
+.privacy { color: #356443; font-size: 13px; font-weight: 700; }
+.extractor { padding-top: 24px; }
+.selection-row, .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.selection-row strong { min-width: 0; overflow-wrap: anywhere; color: #485049; font-size: 14px; }
+.password-field { display: grid; gap: 7px; margin: 22px 0 16px; font-size: 13px; font-weight: 700; }
+.password-field input { width: min(420px, 100%); height: 40px; border: 1px solid #b9beb6; border-radius: 6px; padding: 0 11px; background: #fff; }
+.progress-block { display: grid; gap: 8px; margin: 20px 0 16px; }
+.progress-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.progress-heading strong { color: #2f6d46; font-variant-numeric: tabular-nums; }
+.progress-block progress { width: 100%; height: 14px; overflow: hidden; border: 0; border-radius: 6px; background: #e3e8e2; accent-color: #6f9a7c; }
+.progress-block progress::-webkit-progress-bar { background: #e3e8e2; border-radius: 6px; }
+.progress-block progress::-webkit-progress-value { background: #6f9a7c; border-radius: 6px; transition: width 180ms ease; }
+.progress-block progress::-moz-progress-bar { background: #6f9a7c; border-radius: 6px; }
+.primary { border-color: #315e3d; background: #315e3d; color: #fff; font-weight: 700; }
+.primary:hover:not(:disabled) { background: #274d32; color: #fff; }
+.status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 24px 0 0; border-top: 1px solid #d7dbd4; border-left: 1px solid #d7dbd4; }
+.status-grid div { min-width: 0; border-right: 1px solid #d7dbd4; border-bottom: 1px solid #d7dbd4; padding: 12px; background: #fff; }
+.status-grid dt { color: #6b746c; font-size: 12px; }
+.status-grid dd { margin: 6px 0 0; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.status-grid .output-row { grid-column: 1 / -1; }
+.error { color: #a02d2d; font-size: 13px; font-weight: 700; }
+@media (max-width: 560px) {
+  .shell { width: min(100% - 24px, 760px); margin-top: 18px; }
+  .toolbar { align-items: flex-start; }
+  .status-grid { grid-template-columns: 1fr; }
+  .status-grid .output-row { grid-column: auto; }
+}

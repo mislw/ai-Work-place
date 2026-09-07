@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>解压小工具</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="toolbar">
+        <div>
+          <p class="eyebrow">本机工具箱</p>
+          <h1>解压小工具</h1>
+        </div>
+        <span class="privacy">仅在本机处理</span>
+      </header>
+
+      <section class="extractor" aria-label="解压操作">
+        <div class="selection-row">
+          <button type="button" data-action="pick-file">选择文件</button>
+          <button type="button" data-action="pick-folder">选择文件夹</button>
+          <strong data-role="selection">未选择</strong>
+        </div>
+
+        <label class="password-field">
+          <span>解压密码</span>
+          <input type="password" autocomplete="off" placeholder="无密码可留空" />
+        </label>
+
+        <div class="actions">
+          <button type="button" class="primary" data-action="start" disabled>开始解压</button>
+          <button type="button" data-action="reveal-output" disabled title="打开输出目录">打开目录</button>
+        </div>
+
+        <div class="progress-block">
+          <div class="progress-heading">
+            <span>解压进度</span>
+            <strong data-role="progress-value">0%</strong>
+          </div>
+          <progress data-role="progress" max="100" value="0">0%</progress>
+        </div>
+
+        <dl class="status-grid" aria-live="polite">
+          <div><dt>状态</dt><dd data-role="status">未选择</dd></div>
+          <div><dt>已处理</dt><dd data-role="processed">0</dd></div>
+          <div><dt>成功 / 失败</dt><dd data-role="counts">0 / 0</dd></div>
+          <div class="output-row"><dt>输出位置</dt><dd data-role="output">-</dd></div>
+        </dl>
+        <p class="error" data-role="error" hidden></p>
+      </section>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

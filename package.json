@@ -12,7 +12,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "knowledge:worker": "tsx scripts/knowledge-worker.ts",
-    "intake:worker": "tsx scripts/intake-worker.ts"
+    "intake:worker": "tsx scripts/intake-worker.ts",
+    "desktop:dev": "npm --prefix apps/desktop run dev",
+    "desktop:check": "cargo test --manifest-path apps/desktop/Cargo.toml && cargo check --manifest-path apps/desktop/Cargo.toml",
+    "desktop:build": "npm --prefix apps/desktop run build",
+    "toolbox:local": "node --import tsx tools/local-toolbox/archive-helper.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",
@@ -57,7 +61,8 @@
     "tesseract.js": "^7.0.0",
     "tsx": "^4.23.12",
     "zod": "^3.23.8",
-    "zustand": "^4.5.5"
+    "zustand": "^4.5.5",
+    "7zip-bin": "^5.2.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.5.0",
