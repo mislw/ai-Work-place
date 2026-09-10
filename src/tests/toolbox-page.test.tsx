@@ -31,6 +31,22 @@ describe("toolbox page", () => {
     expect(screen.queryByText(/上传/)).not.toBeInTheDocument();
   });
 
+  it("offers the Windows app as a direct same-origin download", async () => {
+    vi.mocked(getLocalToolboxHealth).mockRejectedValue(new Error("offline"));
+
+    render(<ToolboxPage />);
+
+    await screen.findByText("本机助手未启动");
+
+    expect(screen.getByRole("link", { name: "下载 Windows 版" })).toHaveAttribute(
+      "href",
+      "/downloads/personal-ai-workspace-0.1.1-x64-setup.exe",
+    );
+    expect(screen.getByRole("link", { name: "下载 Windows 版" })).toHaveAttribute(
+      "download",
+    );
+  });
+
   it("opens the helper without forwarding a password or file", async () => {
     vi.mocked(getLocalToolboxHealth).mockResolvedValue({
       ok: true,
